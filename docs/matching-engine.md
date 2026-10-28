@@ -132,6 +132,12 @@ These all happen synchronously, inside the originating transaction:
   reservations are released.
 - **Driver goes offline:** that driver's pending offers are cancelled, and the
   affected jobs are woken so they re-match immediately.
+- **Driver is assigned (any path):** the job is marked MATCHED.
+- **Driver releases an assigned trip** (back to SEARCHING): the job is
+  reactivated with a fresh deadline and offer budget. Every driver already
+  offered the trip, including the one who released it, stays excluded.
+- **Offer sent / accepted / declined / expired / withdrawn:** recorded as a trip
+  audit event (see [trip-service.md](trip-service.md)).
 
 ## API
 

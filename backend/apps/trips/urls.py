@@ -4,8 +4,10 @@ from .views import (
     TripCancelView,
     TripCreateView,
     TripDetailView,
+    TripEventListView,
     TripHistoryView,
     TripMilestoneView,
+    TripReleaseView,
 )
 
 urlpatterns = [
@@ -13,6 +15,8 @@ urlpatterns = [
     path("history/", TripHistoryView.as_view(), name="trip-history"),
     path("<uuid:trip_id>/", TripDetailView.as_view(), name="trip-detail"),
     path("<uuid:trip_id>/cancel/", TripCancelView.as_view(), name="trip-cancel"),
+    path("<uuid:trip_id>/release/", TripReleaseView.as_view(), name="trip-release"),
+    path("<uuid:trip_id>/events/", TripEventListView.as_view(), name="trip-events"),
     path(
         "<uuid:trip_id>/arrive/",
         TripMilestoneView.as_view(milestone="arrive"),

@@ -50,8 +50,9 @@ def test_completion_writes_status_change_and_trip_completed(rider):
         currency="USD",
     )  # fmt: skip
     with transaction.atomic():
-        state_machine.transition(trip, TripStatus.IN_PROGRESS)
-        state_machine.transition(trip, TripStatus.COMPLETED)
+        actor = state_machine.Actor.driver(driver)
+        state_machine.transition(trip, TripStatus.IN_PROGRESS, actor=actor)
+        state_machine.transition(trip, TripStatus.COMPLETED, actor=actor)
     assert types() == ["TripStatusChanged", "TripStatusChanged", "TripCompleted"]
     done = OutboxEvent.objects.get(event_type="TripCompleted")
     assert done.payload["driver_id"] == driver.pk and done.payload["estimated_fare"] == "9.99"

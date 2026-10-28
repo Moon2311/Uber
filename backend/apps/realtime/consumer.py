@@ -196,7 +196,13 @@ class RealtimeConsumer(AsyncJsonWebsocketConsumer):
 
     # --- outbound (channel-layer events) ----------------------------------------------
     async def push(self, event):
-        await self.send_json({"type": event["event"], "data": event["data"]})
+        data = event["data"]
+        if event["event"].startswith("trip.") and isinstance(data, dict):
+            # A trip push already queued when this socket left the trip group
+            # (trip.leave) must not leak to it.
+            if data.get("trip_id") is not None and data["trip_id"] not in self.trip_ids:
+                return
+        await self.send_json({"type": event["event"], "data": data})
 
     async def trip_join(self, event):
         """Server-driven subscription (new trip / new assignment): re-authorize first."""
@@ -206,6 +212,18 @@ class RealtimeConsumer(AsyncJsonWebsocketConsumer):
             await self._join(trip_group(trip_id))
             self.trip_ids.add(trip_id)
             await self.send_json({"type": "trip.snapshot", "data": snapshot})
+
+    async def trip_leave(self, event):
+        """Server-driven unsubscription: the driver was released from the trip, so
+        their sockets must stop receiving its updates."""
+        trip_id = event["trip_id"]
+        if trip_id in self.trip_ids:
+            await self.channel_layer.group_discard(trip_group(trip_id), self.channel_name)
+            self.groups_joined.discard(trip_group(trip_id))
+            self.trip_ids.discard(trip_id)
+        await self.send_json(
+            {"type": "trip.removed", "data": {"trip_id": trip_id, "reason": event.get("reason")}}
+        )
 
     # --- helpers --------------------------------------------------------------------
     async def _join(self, group):

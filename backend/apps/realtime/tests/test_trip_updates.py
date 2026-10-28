@@ -100,3 +100,48 @@ def test_milestones_are_validated_by_backend():
     assert post(driver.user, f"/api/v1/trips/{trip.pk}/start/").status_code == 409  # skip step
     assert post(driver.user, f"/api/v1/trips/{trip.pk}/arrive/").status_code == 200
     assert post(driver.user, f"/api/v1/trips/{trip.pk}/arrive/").status_code == 200  # idempotent
+
+
+def test_released_driver_leaves_the_trip_and_receives_nothing_more():
+    first, second = driver_at(*north(0.4)), driver_at(*north(0.9))
+    trip = new_trip()
+
+    async def scenario():
+        rider, d1 = Client(trip.rider), Client(first.user)
+        await rider.connect()
+        await d1.connect()
+        await db(lambda: orchestrator().run_once())()
+        await commit()
+        offer = (await d1.recv("offer.created"))["data"]
+        await d1.send(type="offer.accept", offer_id=offer["id"])
+        await d1.recv("offer.result")
+        await commit()
+        await d1.recv("trip.snapshot")  # server-driven join
+
+        r = await db(post)(first.user, f"/api/v1/trips/{trip.pk}/release/", {"reason": "flat"})
+        assert r.status_code == 200
+        await commit()
+        removed = (await d1.recv("trip.removed"))["data"]
+        assert removed == {"trip_id": str(trip.pk), "reason": "released"}
+        await d1.drain()  # pushes from while it was still assigned
+        statuses = [m["data"]["status"] for m in await rider.drain() if m["type"] == "trip.status"]
+        assert statuses[-1] == "SEARCHING"
+
+        # Reassigned to someone else: the released driver hears nothing about it.
+        await db(lambda: orchestrator().run_once())()
+        await commit()
+        from apps.matching.models import RideOffer
+        from apps.matching.offers import accept_offer
+        from apps.matching.state import NullReservationLocks
+
+        await db(lambda: accept_offer(
+            offer_id=RideOffer.objects.get(trip=trip, driver=second).id, driver=second,
+            locks=NullReservationLocks(),
+        ))()  # fmt: skip
+        await commit()
+        assert (await rider.recv("trip.status"))["data"]["status"] == "DRIVER_ASSIGNED"
+        assert [m for m in await d1.drain() if m["type"].startswith("trip.")] == []
+        await rider.close()
+        await d1.close()
+
+    run(scenario)

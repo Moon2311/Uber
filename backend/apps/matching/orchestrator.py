@@ -25,8 +25,9 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.common.metrics import metrics
-from apps.trips import state_machine
-from apps.trips.models import Trip, TripStatus
+from apps.trips import audit, state_machine
+from apps.trips.models import Trip, TripEventType, TripStatus
+from apps.trips.state_machine import Actor
 
 from .discovery import KRingSearch
 from .eta import ResilientEtaService, get_eta_service
@@ -234,7 +235,7 @@ class MatchingOrchestrator:
             if self._owned_job(trip_id) is None:
                 return False
             if trip.status == TripStatus.REQUESTED:
-                state_machine.transition(trip, TripStatus.SEARCHING)
+                state_machine.transition(trip, TripStatus.SEARCHING, actor=Actor.system())
             return trip.status == TripStatus.SEARCHING
 
     def _exhaust(self, trip_id):
@@ -243,13 +244,16 @@ class MatchingOrchestrator:
             if self._owned_job(trip_id) is None:
                 return
             if trip.status in (TripStatus.REQUESTED, TripStatus.SEARCHING):
-                # Signal receivers cancel offers, payment record and close the job.
+                job = MatchingJob.objects.get(trip_id=trip_id)
+                details = {"rounds": job.rounds, "offers_made": job.offers_made,
+                           "deadline": job.deadline.isoformat()}  # fmt: skip
+                audit.record(trip, TripEventType.ASSIGNMENT_FAILED, actor=Actor.system(),
+                             reason="no_driver_available", metadata=details)  # fmt: skip
+                # Signal receivers cancel offers and the payment record.
                 state_machine.transition(
-                    trip, TripStatus.CANCELLED, cancellation_reason="no_driver_available"
-                )
-                from apps.payments.services import cancel_payment_for_trip
-
-                cancel_payment_for_trip(trip=trip)
+                    trip, TripStatus.CANCELLED, actor=Actor.system(),
+                    reason="no_driver_available", metadata=details,
+                )  # fmt: skip
             MatchingJob.objects.filter(trip_id=trip_id).update(
                 status=JobStatus.EXHAUSTED, last_outcome="exhausted", lease_owner="",
                 lease_until=None,

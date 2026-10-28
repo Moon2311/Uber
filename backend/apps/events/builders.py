@@ -19,7 +19,12 @@ def driver_availability_changed(
     )
 
 
-def ride_requested(trip) -> Event:
+def _ids(event_id) -> dict:
+    """Reuse the trip audit event id as the envelope id (TripEvent <-> Kafka)."""
+    return {"event_id": str(event_id)} if event_id else {}
+
+
+def ride_requested(trip, *, event_id=None) -> Event:
     from apps.geoindex.h3_index import GeoIndexError
     from apps.geoindex.service import get_geo_search_service
 
@@ -42,10 +47,11 @@ def ride_requested(trip) -> Event:
             "currency": trip.currency,
             "requested_at": trip.created_at,
         },
+        **_ids(event_id),
     )
 
 
-def trip_status_changed(trip, from_status, to_status, reason=None) -> Event:
+def trip_status_changed(trip, from_status, to_status, reason=None, *, event_id=None) -> Event:
     return make_event(
         "TripStatusChanged",
         {
@@ -57,6 +63,7 @@ def trip_status_changed(trip, from_status, to_status, reason=None) -> Event:
             "reason": reason or None,
             "changed_at": trip.updated_at,
         },
+        **_ids(event_id),
     )
 
 
@@ -93,6 +100,20 @@ def ride_offer_created(
             "straight_line_km": straight_line_km,
             "grid_distance": grid_distance,
             "created_at": created_at,
+        },
+    )
+
+
+def ride_offer_closed(*, trip_id, offer_id, driver_id, status, reason, closed_at) -> Event:
+    return make_event(
+        "RideOfferClosed",
+        {
+            "trip_id": trip_id,
+            "offer_id": offer_id,
+            "driver_id": driver_id,
+            "status": status,
+            "reason": reason,
+            "closed_at": closed_at,
         },
     )
 

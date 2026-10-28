@@ -93,6 +93,7 @@ Server → client:
 | `offer.closed` | that driver | declined, expired, cancelled (trip cancelled / driver offline) or accepted on another device |
 | `offer.result` | the responding connection | authoritative outcome of accept/decline |
 | `trip.status` | `trip.<id>` (rider and assigned driver) | every committed status change, with `milestone` and a fresh `trip` snapshot |
+| `trip.removed` | the released driver's connections | the driver released the trip (`POST /trips/{id}/release/`); the socket has left `trip.<id>` and gets no further updates for it |
 | `trip.driver_location` | `trip.<id>` | each GPS fix of the **assigned** driver while assigned / arriving / in progress |
 | `trip.driver_approaching` | `trip.<id>` | once, when the assigned driver comes within `REALTIME_APPROACHING_RADIUS_M` (300 m) of the pickup |
 | `error` | the connection | `unknown_type`, `invalid_json`, `invalid_message`, `invalid_trip_id`, `invalid_offer_id`, `not_found`, `forbidden`, `token_expired` |

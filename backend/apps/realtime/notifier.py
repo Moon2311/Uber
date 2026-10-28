@@ -97,13 +97,27 @@ def on_trip_requested(sender, trip, **kw):
 
 
 @receiver(trip_status_changed, dispatch_uid="realtime.trip_status")
-def on_trip_status_changed(sender, trip, from_status, to_status, **kw):
+def on_trip_status_changed(sender, trip, from_status, to_status, previous_driver_id=None, **kw):
     trip_id = str(trip.pk)
     driver_id = trip.driver_id
     driver_user_id = trip.driver.user_id if driver_id else None
     pickup = (float(trip.pickup_latitude), float(trip.pickup_longitude))
+    released_user_id = None
+    if previous_driver_id and previous_driver_id != driver_id:
+        from apps.drivers.models import DriverProfile
+
+        released_user_id = (
+            DriverProfile.objects.filter(pk=previous_driver_id)
+            .values_list("user_id", flat=True)
+            .first()
+        )
 
     def deliver():
+        # A released driver leaves the trip BEFORE the status push goes out.
+        if released_user_id:
+            presence.clear_driver_trip(previous_driver_id)
+            control(user_group(released_user_id),
+                    {"type": "trip.leave", "trip_id": trip_id, "reason": "released"})  # fmt: skip
         # Server-driven subscription: the newly assigned driver's sockets join the trip.
         if to_status == "DRIVER_ASSIGNED" and driver_user_id:
             control(user_group(driver_user_id), {"type": "trip.join", "trip_id": trip_id})

@@ -208,6 +208,20 @@ SCHEMAS: dict[tuple[str, int], EventSchema] = {
             F("accepted_at", "datetime"),
         ),
         _schema(
+            "RideOfferClosed",
+            1,
+            topics.TRIP_EVENTS,
+            "trip_id",
+            F("trip_id", "uuid"),
+            F("offer_id", "uuid"),
+            F("driver_id", "int"),
+            F("status", "str"),  # DECLINED | EXPIRED | CANCELLED
+            F("reason", "str"),
+            F("closed_at", "datetime"),
+            description="An offer ended without acceptance: rejection by the driver, "
+            "expiry, or withdrawal (trip cancelled / driver offline).",
+        ),
+        _schema(
             "TripStatusChanged",
             1,
             topics.TRIP_EVENTS,

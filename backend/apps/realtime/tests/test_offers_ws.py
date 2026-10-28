@@ -177,7 +177,12 @@ def test_rolled_back_assignment_is_never_pushed():
             try:
                 with transaction.atomic():
                     t = Trip.objects.select_for_update().get(pk=trip.pk)
-                    state_machine.transition(t, TripStatus.DRIVER_ASSIGNED, driver=driver)
+                    state_machine.transition(
+                        t,
+                        TripStatus.DRIVER_ASSIGNED,
+                        actor=state_machine.Actor.driver(driver),
+                        driver=driver,
+                    )
                     raise RuntimeError("later step failed")
             except RuntimeError:
                 pass

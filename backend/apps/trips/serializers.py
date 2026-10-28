@@ -3,7 +3,7 @@ from rest_framework import serializers
 from apps.drivers.models import RideCategory
 from apps.pricing.serializers import LocationPointSerializer
 
-from .models import Trip
+from .models import Trip, TripEvent
 
 
 class TripCreateSerializer(serializers.Serializer):
@@ -27,8 +27,33 @@ class TripCreateSerializer(serializers.Serializer):
         return attrs
 
 
-class TripCancelSerializer(serializers.Serializer):
+class _VersionedCommand(serializers.Serializer):
+    # Optional optimistic-concurrency guard: the `state_version` the client last saw.
+    # A mismatch is 409 stale_trip_state instead of acting on an outdated screen.
+    expected_version = serializers.IntegerField(min_value=0, required=False, default=None)
+
+
+class TripCancelSerializer(_VersionedCommand):
     reason = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+
+
+class TripMilestoneSerializer(_VersionedCommand):
+    pass
+
+
+class TripReleaseSerializer(TripCancelSerializer):
+    pass
+
+
+class TripEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TripEvent
+        fields = [
+            "event_id", "event_type", "state_version", "from_status", "to_status",
+            "actor_type", "actor_id", "driver_id", "offer_id", "reason", "metadata",
+            "occurred_at",
+        ]  # fmt: skip
+        read_only_fields = fields
 
 
 class _PointOut(serializers.Serializer):
@@ -48,6 +73,7 @@ class TripSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "status",
+            "state_version",
             "ride_category",
             "pickup",
             "dropoff",
@@ -59,10 +85,13 @@ class TripSerializer(serializers.ModelSerializer):
             "driver",
             "created_at",
             "updated_at",
+            "search_started_at",
             "driver_assigned_at",
+            "driver_arrived_at",
             "started_at",
             "completed_at",
             "cancelled_at",
+            "cancelled_by",
             "cancellation_reason",
         ]
         read_only_fields = fields

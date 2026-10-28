@@ -176,7 +176,10 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
-    "ENUM_NAME_OVERRIDES": {"RideCategoryEnum": "apps.drivers.models.RideCategory"},
+    "ENUM_NAME_OVERRIDES": {
+        "RideCategoryEnum": "apps.drivers.models.RideCategory",
+        "ActorTypeEnum": "apps.trips.models.ActorType",
+    },
 }
 
 # --- CORS / CSRF (explicit allow-list, never wildcard) ----------------------

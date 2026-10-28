@@ -24,6 +24,7 @@ from apps.common.metrics import metrics
 from apps.drivers.models import AvailabilityStatus, DriverProfile, Vehicle
 from apps.trips import state_machine
 from apps.trips.models import Trip, TripStatus
+from apps.trips.state_machine import Actor
 
 from .models import JobStatus, MatchingJob, OfferStatus, RideOffer
 from .ranking import RankedCandidate
@@ -181,7 +182,10 @@ def accept_offer(*, offer_id, driver: DriverProfile, locks: ReservationLocks) ->
             offer.responded_at = now
             offer.save(update_fields=["status", "responded_at", "updated_at"])
             # Trip.trip_one_active_per_driver is the final guard here.
-            state_machine.transition(trip, TripStatus.DRIVER_ASSIGNED, driver=locked_driver)
+            state_machine.transition(
+                trip, TripStatus.DRIVER_ASSIGNED, actor=Actor.driver(locked_driver),
+                driver=locked_driver, metadata={"offer_id": str(offer.pk)},
+            )  # fmt: skip
             MatchingJob.objects.filter(trip_id=trip.pk).update(
                 status=JobStatus.MATCHED, last_outcome="accepted", lease_owner="", lease_until=None
             )
