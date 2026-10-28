@@ -11,12 +11,13 @@ been built yet** (see *Status*).
 | 1 | Accounts, roles, drivers/vehicles, trips, pricing, payment records, JWT, health | Backend done & tested; **frontend pending** |
 | 2 | Location service (ordering, staleness, sampled history, store interface, metrics, logging) | Done & tested — see [docs/location-service.md](docs/location-service.md) |
 | 3 | H3 indexing: cell per latest location, bounded ring expansion, bbox fallback retained | Done & tested — see [docs/h3-geo-indexing.md](docs/h3-geo-indexing.md) |
+| 4 | Redis hot store: live locations, availability mirror, H3 cell sets, Lua atomicity, TTLs, failover to PostgreSQL, reconcile/rebuild | Done & tested — see [docs/redis-hot-store.md](docs/redis-hot-store.md) |
 
 ## Quick start
 
 ```bash
 cp .env.example .env            # then set POSTGRES_PASSWORD / DJANGO_SECRET_KEY / DATABASE_URL
-docker compose up -d --build    # PostgreSQL on host :5433, API on :8000 (migrates on start)
+docker compose up -d --build    # PostgreSQL :5433, Redis :6380, API :8000 (migrates on start)
 curl localhost:8000/api/v1/health/
 ```
 
@@ -25,7 +26,7 @@ Running the backend on the host instead (for development):
 ```bash
 python3 -m venv backend/.venv
 backend/.venv/bin/pip install -r backend/requirements-dev.txt
-make db          # PostgreSQL only
+make db          # PostgreSQL + Redis
 make migrate
 make run         # http://localhost:8000
 ```
@@ -36,11 +37,14 @@ API docs: Swagger UI at http://localhost:8000/api/docs/; the OpenAPI schema is a
 
 | Command | What it does |
 |---|---|
-| `make test` | pytest against PostgreSQL (creates a throw-away test DB) |
+| `make test` | pytest against PostgreSQL + Redis (throw-away test DB; Redis DB 15, per-test key prefix) |
 | `make lint` / `make format` | ruff lint + format check / autofix |
 | `make expire-stale` | Switch silent drivers offline (schedule every minute) |
 | `make prune-history` | Delete location history older than retention (schedule daily) |
 | `make reindex-locations` | Recompute H3 cells after changing `H3_RESOLUTION` |
+| `make reconcile-live` | Replay Redis-outage fallback writes / resync after Redis data loss (schedule every minute) |
+| `make prune-live` | Drop expired drivers from Redis indexes (schedule every minute) |
+| `make rebuild-live` | Full rebuild of the Redis live index from PostgreSQL |
 | `make schema` | Export OpenAPI to `docs/openapi.yml` |
 
 ## API (v1)
@@ -83,4 +87,8 @@ Errors always use this shape: `{"error": {"code", "message", "details"}}`.
   grid distances, never on a resolution, and falls back to bbox search on H3
   errors. H3 grid distance is **not** road distance or travel time (see
   [docs/h3-geo-indexing.md](docs/h3-geo-indexing.md)).
-- **Not yet introduced, on purpose:** Redis, Channels, Kafka, Cassandra.
+- **Redis is a disposable hot store.** It holds live locations, the availability
+  mirror and H3 cell sets. PostgreSQL is the source of truth for every
+  application record. Everything in Redis can be rebuilt, and the app degrades to
+  PostgreSQL when Redis is down (see [docs/redis-hot-store.md](docs/redis-hot-store.md)).
+- **Not yet introduced, on purpose:** Channels, Kafka, Cassandra.

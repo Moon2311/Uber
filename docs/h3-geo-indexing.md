@@ -151,9 +151,10 @@ usually within seconds. A test covers this.
 | `drivers.candidates.results` | gauge | — |
 | `location.h3.index_error` | counter | fixes stored without a cell |
 
-## Toward Redis (later step)
+## Storage of cells (Step 4)
 
-`find_in_cells` maps naturally to one Redis set per cell (`SADD cell:{id} driver`
-on write, `SREM` from the old cell on move, `SUNION` per ring), with freshness
-checked against a per-driver hash. The expansion policy and the geoindex layer
-stay as they are.
+Cell membership now lives in Redis as one sorted set per cell, scored by the fix
+timestamp (`P:cell:<h3>`). A driver's move between cells happens in the same Lua
+script as the location write. Candidate retrieval still only calls
+`LocationService.find_in_cells`, so this file's expansion policy didn't change.
+See [redis-hot-store.md](redis-hot-store.md).

@@ -11,7 +11,9 @@ from apps.common.logging import JsonFormatter, redact
 def test_health_ok(api_client):
     response = api_client.get(reverse("v1:health"))
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "database": "ok"}
+    body = response.json()
+    assert body["status"] == "ok" and body["database"] == "ok"
+    assert body["live_store"]["status"] == "ok"
 
 
 @pytest.mark.django_db

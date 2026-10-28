@@ -20,7 +20,11 @@ class HealthView(APIView):
     @extend_schema(
         responses=inline_serializer(
             "Health",
-            {"status": serializers.CharField(), "database": serializers.CharField()},
+            {
+                "status": serializers.CharField(),
+                "database": serializers.CharField(),
+                "live_store": serializers.DictField(),
+            },
         )
     )
     def get(self, request):
@@ -33,8 +37,25 @@ class HealthView(APIView):
             logger.exception("Health check: database unavailable")
             db_status = "unavailable"
 
-        healthy = db_status == "ok"
-        return Response(
-            {"status": "ok" if healthy else "degraded", "database": db_status},
-            status=status.HTTP_200_OK if healthy else status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
+        live = _live_store_health()
+        if db_status != "ok":
+            overall, code = "unavailable", status.HTTP_503_SERVICE_UNAVAILABLE
+        elif live["status"] == "ok":
+            overall, code = "ok", status.HTTP_200_OK
+        elif live["status"] == "degraded":
+            # Redis down but PostgreSQL fallback serving: stay in rotation.
+            overall, code = "degraded", status.HTTP_200_OK
+        else:
+            overall, code = "unavailable", status.HTTP_503_SERVICE_UNAVAILABLE
+        return Response({"status": overall, "database": db_status, "live_store": live}, status=code)
+
+
+def _live_store_health() -> dict:
+    from apps.locations.service import build_store
+
+    try:
+        store = build_store()
+        return {"backend": store.name, **store.health()}
+    except Exception as exc:  # noqa: BLE001 - health must never raise
+        logger.exception("Health check: live store error")
+        return {"status": "unavailable", "error": type(exc).__name__}

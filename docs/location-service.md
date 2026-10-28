@@ -12,14 +12,13 @@ sequenceDiagram
     participant App as Driver app
     participant API as POST /api/v1/locations/update/
     participant Svc as LocationService
-    participant Store as LocationStore (PostgreSQL)
+    participant Store as LocationStore (Redis since Step 4)
     participant Hist as DriverLocationEvent (sampled)
 
     App->>API: {lat, lng, accuracy_m, heading, speed_kmh, recorded_at} + Bearer JWT
     API->>API: JWT → user → role DRIVER (IsDriver), throttle 120/min
     API->>API: LocationUpdateSerializer: ranges, tz-aware timestamp,<br/>not in future (>30 s), unknown fields (e.g. driver_id) → 400
     API->>Svc: record_driver_update(driver = request.user.driver_profile, ...)
-    Svc->>Svc: BEGIN; SELECT driver FOR UPDATE; require ONLINE (else 409 driver_offline)
     Svc->>Svc: recorded_at = min(device time or now, now)
     Svc->>Svc: h3_cell = latlng_to_cell(lat, lng, H3_RESOLUTION) (Step 3)
     alt older than LOCATION_MAX_AGE_SECONDS
@@ -28,7 +27,7 @@ sequenceDiagram
         Svc-->>API: accepted=false, outcome=low_accuracy
     else
         Svc->>Store: upsert_if_newer(fix)
-        Note over Store: INSERT … ON CONFLICT (driver_id) DO UPDATE<br/>WHERE stored.recorded_at < new.recorded_at
+        Note over Store: atomically: driver ONLINE? (else 409 driver_offline)<br/>recorded_at newer? write fix + move H3 cell<br/>Redis: one Lua script · PostgreSQL: row lock + guarded UPSERT
         alt newer
             Store-->>Svc: applied
             Svc->>Hist: insert only if moved ≥100 m and ≥30 s,<br/>or ≥300 s since last event
@@ -38,7 +37,7 @@ sequenceDiagram
             Svc-->>API: accepted=false, outcome=out_of_order
         end
     end
-    Svc->>Svc: COMMIT; metrics + structured log
+    Svc->>Svc: metrics + structured log
     API-->>App: 200 {accepted, outcome, freshness, lat, lng, …stored fix}
 ```
 
@@ -137,8 +136,10 @@ are rejected outright.
 - Run the command every minute (cron for now; Celery beat in a later step).
 
 **Going offline.** The driver's latest location is deleted, for privacy and so a
-stale position is never reused. The driver row lock means a location update that
-races with going offline can't bring the location back.
+stale position is never reused. The store applies the status change and the
+deletion in one atomic step (a Lua script in Redis, the driver row lock in
+PostgreSQL), so a location update racing with going offline can't bring the
+location back.
 
 **History.** `DriverLocationEvent` gets a row only when the driver has moved
 ≥ `LOCATION_HISTORY_MIN_DISTANCE_M` **and** ≥ `LOCATION_HISTORY_MIN_INTERVAL_SECONDS`
@@ -180,7 +181,8 @@ passwords are redacted by `RedactSensitiveDataFilter`.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LOCATION_STORE_BACKEND` | `apps.locations.stores.PostgresLocationStore` | Storage implementation |
+| `LOCATION_STORE` | `redis` | `redis` or `postgres` (Step 4; replaces `LOCATION_STORE_BACKEND`) |
+| `LOCATION_STORE_FALLBACK` | `postgres` | What to use when Redis is down: `postgres` or `none` (503) |
 | `DRIVER_LOCATION_STALE_SECONDS` | 120 | FRESH → STALE threshold |
 | `DRIVER_AUTO_OFFLINE_SECONDS` | 900 | Silence before auto-offline |
 | `LOCATION_MAX_AGE_SECONDS` | 300 | Older fixes are not applied |
@@ -195,28 +197,12 @@ passwords are redacted by `RedactSensitiveDataFilter`.
 | `METRICS_BACKEND` | `apps.common.metrics.LoggingMetrics` | Metrics sink |
 | `LOG_FORMAT` | json | `json` or `text` |
 
-## Replacing / supplementing storage with Redis (later step)
+## Storage
 
-`LocationStore` (in `stores.py`) is the only thing that touches latest-location
-storage. A `RedisLocationStore` must keep the same contract:
+Since Step 4, live location state lives in Redis behind the `LocationStore`
+interface, with PostgreSQL as the fallback. See
+[redis-hot-store.md](redis-hot-store.md) for the key layout, Lua scripts,
+failover and recovery.
 
-- `upsert_if_newer(fix) -> (applied, current)`: atomic compare-and-set on
-  `recorded_at`, for example a Lua script that does `HGET ts` and compares before
-  `HSET`.
-- `get(driver_id)`, `remove(driver_id)` (idempotent).
-- `find_in_bbox(bbox, fresh_after)`: Redis `GEOSEARCH` plus a timestamp check
-  (used by the retained bbox fallback).
-- `find_in_cells(cells, fresh_after)`: one Redis set per H3 cell (added in
-  Step 3, see [h3-geo-indexing.md](h3-geo-indexing.md)).
-
-`backend/apps/locations/tests/test_store.py` is written as a contract suite
-parametrised over store classes, so adding the Redis store means adding it to
-`params=[...]`.
-
-Driver availability (ONLINE, active vehicle, category) deliberately stays in
-PostgreSQL and in the drivers domain, so the store never needs to know about it.
-
-**Known trade-off.** The driver row lock (`SELECT … FOR UPDATE`) adds a PostgreSQL
-round trip per update. It is what guarantees "offline drivers never keep a
-location". With Redis, availability will be cached alongside the location and the
-lock replaced by a versioned status check.
+The contract suite in `backend/apps/locations/tests/test_store.py` runs against
+the PostgreSQL, Redis and failover stores.

@@ -24,11 +24,23 @@ class ConflictError(exceptions.APIException):
     default_code = "conflict"
 
 
+class ServiceUnavailableError(exceptions.APIException):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "A backing service is temporarily unavailable. Please retry."
+    default_code = "service_unavailable"
+
+
 def _error_body(code: str, message: str, details=None) -> dict:
     return {"error": {"code": code, "message": message, "details": details or {}}}
 
 
 def api_exception_handler(exc, context):
+    from apps.locations.stores import StoreUnavailable
+
+    if isinstance(exc, StoreUnavailable):
+        # Only reached when no fallback is configured (LOCATION_STORE_FALLBACK=none).
+        logger.error("Live store unavailable: %s", exc)
+        exc = ServiceUnavailableError()
     if isinstance(exc, Http404):
         exc = exceptions.NotFound()
     elif isinstance(exc, DjangoPermissionDenied):

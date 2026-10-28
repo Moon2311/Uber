@@ -6,10 +6,10 @@ import pytest
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.locations.models import DriverLocation, DriverLocationEvent
-from conftest import client_for, make_driver
+from apps.locations.models import DriverLocationEvent
+from conftest import client_for, latest, make_driver
 
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("live_store_backend")]
 URL = "/api/v1/locations/update/"
 
 
@@ -36,7 +36,7 @@ def test_full_update_is_stored(driver_client, driver):
     # step-1 response fields are still present at top level
     for key in ["lat", "lng", "heading", "speed_kmh", "accuracy_m", "recorded_at", "updated_at"]:
         assert key in body
-    row = DriverLocation.objects.get(driver=driver)
+    row = latest(driver)
     assert row.accuracy_m == 5.5 and row.heading == 90 and row.speed_kmh == 32.4
     assert row.recorded_at == ts
 
@@ -44,13 +44,13 @@ def test_full_update_is_stored(driver_client, driver):
 def test_minimal_update_defaults_timestamp_to_server_time(driver_client, driver):
     before = timezone.now()
     assert post(driver_client).status_code == 200
-    assert DriverLocation.objects.get(driver=driver).recorded_at >= before
+    assert latest(driver).recorded_at >= before
 
 
 def test_high_precision_gps_is_rounded(driver_client, driver):
     response = post(driver_client, lat=37.774929123456789, lng=-122.419416123456789)
     assert response.status_code == 200
-    row = DriverLocation.objects.get(driver=driver)
+    row = latest(driver)
     assert str(row.latitude) == "37.774929" and str(row.longitude) == "-122.419416"
 
 
@@ -96,7 +96,7 @@ def test_naive_timestamp_rejected(driver_client):
 def test_small_future_skew_is_clamped_to_server_time(driver_client, driver):
     future = timezone.now() + timedelta(seconds=10)
     assert post(driver_client, recorded_at=iso(future)).json()["accepted"] is True
-    assert DriverLocation.objects.get(driver=driver).recorded_at < future
+    assert latest(driver).recorded_at < future
 
 
 # --- ownership / roles -------------------------------------------------------
@@ -105,14 +105,14 @@ def test_driver_id_in_body_is_rejected(driver_client):
     response = post(driver_client, driver_id=victim.pk)
     assert response.status_code == 400
     assert "driver_id" in response.json()["error"]["details"]
-    assert not DriverLocation.objects.filter(driver=victim).exists()
+    assert latest(victim) is None
 
 
 def test_driver_only_writes_own_location(driver_client, driver):
     other = make_driver(online=True)
     post(driver_client)
-    assert DriverLocation.objects.filter(driver=driver).exists()
-    assert not DriverLocation.objects.filter(driver=other).exists()
+    assert latest(driver) is not None
+    assert latest(other) is None
 
 
 def test_rider_cannot_update_location(rider_client):
@@ -127,7 +127,7 @@ def test_offline_driver_rejected(offline_driver):
     response = post(client_for(offline_driver.user))
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "driver_offline"
-    assert not DriverLocation.objects.exists()
+    assert latest(offline_driver) is None
 
 
 # --- ordering ----------------------------------------------------------------
@@ -141,22 +141,21 @@ def test_out_of_order_update_is_ignored(driver_client, driver):
     body = late.json()
     assert body["accepted"] is False and body["outcome"] == "out_of_order"
     assert body["lat"] == 10  # response reflects what is actually stored
-    assert float(DriverLocation.objects.get(driver=driver).latitude) == 10
+    assert float(latest(driver).latitude) == 10
 
 
 def test_duplicate_timestamp_is_ignored(driver_client, driver):
     ts = iso(timezone.now() - timedelta(seconds=3))
     assert post(driver_client, lat=10, recorded_at=ts).json()["accepted"] is True
     assert post(driver_client, lat=11, recorded_at=ts).json()["outcome"] == "out_of_order"
-    assert float(DriverLocation.objects.get(driver=driver).latitude) == 10
+    assert float(latest(driver).latitude) == 10
 
 
-def test_newer_update_replaces_and_keeps_single_row(driver_client, driver):
+def test_newer_update_replaces_previous(driver_client, driver):
     now = timezone.now()
     for i, seconds_ago in enumerate([30, 20, 10]):
         post(driver_client, lat=10 + i, recorded_at=iso(now - timedelta(seconds=seconds_ago)))
-    assert DriverLocation.objects.filter(driver=driver).count() == 1
-    assert float(DriverLocation.objects.get(driver=driver).latitude) == 12
+    assert float(latest(driver).latitude) == 12
 
 
 def test_too_old_update_not_applied(driver_client, driver, settings):
@@ -165,14 +164,14 @@ def test_too_old_update_not_applied(driver_client, driver, settings):
     assert response.status_code == 200
     assert response.json()["outcome"] == "too_old"
     assert response.json()["freshness"] == "MISSING"
-    assert not DriverLocation.objects.filter(driver=driver).exists()
+    assert latest(driver) is None
 
 
 def test_low_accuracy_update_not_applied(driver_client, driver, settings):
     settings.LOCATION_MAX_ACCURACY_M = 100
     response = post(driver_client, accuracy_m=2500)
     assert response.json()["outcome"] == "low_accuracy"
-    assert not DriverLocation.objects.filter(driver=driver).exists()
+    assert latest(driver) is None
 
 
 # --- history -----------------------------------------------------------------
@@ -206,7 +205,7 @@ def test_history_heartbeat_when_stationary(driver_client, driver, settings):
 def test_history_can_be_disabled(driver_client, driver, settings):
     settings.LOCATION_HISTORY_ENABLED = False
     post(driver_client)
-    assert DriverLocation.objects.filter(driver=driver).exists()
+    assert latest(driver) is not None
     assert not DriverLocationEvent.objects.exists()
 
 
@@ -263,24 +262,24 @@ def test_update_stores_h3_cell_at_configured_resolution(driver_client, driver, s
 
     settings.H3_RESOLUTION = 9
     post(driver_client, lat=37.7749, lng=-122.4194)
-    row = DriverLocation.objects.get(driver=driver)
+    row = latest(driver)
     assert row.h3_cell == h3.latlng_to_cell(37.7749, -122.4194, 9) and row.h3_resolution == 9
 
 
 def test_cell_moves_with_the_driver(driver_client, driver):
     now = timezone.now()
     post(driver_client, lat=37.7749, recorded_at=iso(now - timedelta(seconds=5)))
-    first = DriverLocation.objects.get(driver=driver).h3_cell
+    first = latest(driver).h3_cell
     post(driver_client, lat=37.80, recorded_at=iso(now))
-    assert DriverLocation.objects.get(driver=driver).h3_cell != first
+    assert latest(driver).h3_cell != first
 
 
 def test_out_of_order_update_does_not_change_cell(driver_client, driver):
     now = timezone.now()
     post(driver_client, lat=37.7749, recorded_at=iso(now))
-    cell = DriverLocation.objects.get(driver=driver).h3_cell
+    cell = latest(driver).h3_cell
     post(driver_client, lat=37.90, recorded_at=iso(now - timedelta(seconds=10)))
-    assert DriverLocation.objects.get(driver=driver).h3_cell == cell
+    assert latest(driver).h3_cell == cell
 
 
 def test_h3_failure_never_loses_the_fix(driver_client, driver, monkeypatch, recorded_metrics):
@@ -291,6 +290,6 @@ def test_h3_failure_never_loses_the_fix(driver_client, driver, monkeypatch, reco
 
     monkeypatch.setattr(h3, "latlng_to_cell", boom)
     assert post(driver_client).json()["accepted"] is True
-    row = DriverLocation.objects.get(driver=driver)
+    row = latest(driver)
     assert row.h3_cell is None and row.latitude is not None
     assert recorded_metrics.count("location.h3.index_error") == 1

@@ -30,14 +30,29 @@ def create_driver_profile(*, user, license_number: str, vehicle: dict) -> Driver
     return profile
 
 
+def _active_category(driver_id: int) -> str | None:
+    return (
+        Vehicle.objects.filter(driver_id=driver_id, is_active=True)
+        .values_list("category", flat=True)
+        .first()
+    )
+
+
 def _apply_status(driver: DriverProfile, target: str, *, reason: str) -> None:
+    """Caller holds the driver row lock (select_for_update)."""
     driver.availability_status = target
     driver.availability_changed_at = timezone.now()
     driver.save(update_fields=["availability_status", "availability_changed_at", "updated_at"])
-    if target == AvailabilityStatus.OFFLINE:
-        # Offline drivers' positions are not retained as "latest" (privacy) and
-        # they must report a fresh fix after coming back online.
-        get_location_service().clear(driver.pk)
+    # Mirror into the live store *while holding the row lock*, so concurrent toggles
+    # reach Redis in the same order as PostgreSQL. Going offline drops the location
+    # and its H3 cell membership atomically (privacy; a fresh fix is required after
+    # coming back online). If the mirror write fails (Redis down) the failover store
+    # degrades to PostgreSQL and the change is re-pushed on recovery.
+    get_location_service().set_driver_availability(
+        driver.pk,
+        online=target == AvailabilityStatus.ONLINE,
+        category=_active_category(driver.pk),
+    )
     metrics().increment("driver.availability.changed", tags={"to": target, "reason": reason})
     logger.info(
         "driver.availability.changed",
@@ -62,6 +77,49 @@ def set_availability(*, driver: DriverProfile, online: bool) -> DriverProfile:
     if driver.availability_status != target:
         _apply_status(driver, target, reason="driver_request")
     return driver
+
+
+def live_availability_snapshot(driver_id: int) -> tuple[bool, str | None]:
+    """(online, active vehicle category) from PostgreSQL, the source of truth."""
+    status = (
+        DriverProfile.objects.filter(pk=driver_id)
+        .values_list("availability_status", flat=True)
+        .first()
+    )
+    return status == AvailabilityStatus.ONLINE, _active_category(driver_id)
+
+
+def resync_live_availability(*, changed_since=None, seed_online=True) -> dict:
+    """Re-push availability from PostgreSQL into the live store.
+
+    * Drivers whose status changed since `changed_since` (or every driver if None)
+      are written authoritatively, one at a time under their row lock.
+    * With `seed_online`, every other ONLINE driver is seeded only-if-absent, which
+      restores the mirror after Redis lost its data without racing real toggles.
+    Idempotent; used by failover recovery and `manage.py rebuild_live_index`.
+    """
+    service = get_location_service()
+    changed = DriverProfile.objects.all()
+    if changed_since is not None:
+        changed = changed.filter(availability_changed_at__gte=changed_since)
+    synced = 0
+    for driver_id in changed.values_list("pk", flat=True).iterator():
+        with transaction.atomic():
+            driver = DriverProfile.objects.select_for_update().get(pk=driver_id)
+            service.set_driver_availability(
+                driver_id, online=driver.is_online, category=_active_category(driver_id)
+            )
+        synced += 1
+    seeded = 0
+    if seed_online and changed_since is not None:
+        online = DriverProfile.objects.filter(availability_status=AvailabilityStatus.ONLINE)
+        for driver_id in online.values_list("pk", flat=True).iterator():
+            service.store.seed_availability(
+                driver_id, online=True, category=_active_category(driver_id)
+            )
+            seeded += 1
+    logger.info("live_index.resynced", extra={"synced": synced, "seeded": seeded})
+    return {"synced": synced, "seeded": seeded}
 
 
 @dataclass(frozen=True)

@@ -184,9 +184,13 @@ NEARBY_DRIVERS_MAX_RESULTS = env.int("NEARBY_DRIVERS_MAX_RESULTS", default=25)
 FARE_CURRENCY = env("FARE_CURRENCY", default="USD")
 
 # --- Location service (see docs/location-service.md) ------------------------
-# Storage backend for latest driver locations (swap for a Redis store later).
-LOCATION_STORE_BACKEND = env(
-    "LOCATION_STORE_BACKEND", default="apps.locations.stores.PostgresLocationStore"
+# Hot store for live driver locations: "redis" (default) or "postgres".
+LOCATION_STORE = env("LOCATION_STORE", default="redis")
+# When Redis is unavailable: "postgres" (degrade to PostgreSQL) or "none" (503).
+LOCATION_STORE_FALLBACK = env("LOCATION_STORE_FALLBACK", default="postgres")
+# After a Redis failure, skip Redis for this long before trying again.
+LOCATION_STORE_CIRCUIT_COOLDOWN_SECONDS = env.float(
+    "LOCATION_STORE_CIRCUIT_COOLDOWN_SECONDS", default=5.0
 )
 # A location older than this is "stale": the driver is not considered available.
 DRIVER_LOCATION_STALE_SECONDS = env.int("DRIVER_LOCATION_STALE_SECONDS", default=120)
@@ -218,6 +222,19 @@ H3_RESOLUTION = env.int("H3_RESOLUTION", default=8)
 H3_MAX_GRID_DISTANCE = env.int("H3_MAX_GRID_DISTANCE", default=40)
 # "h3" (default) or "bbox" (step 1/2 implementation, kept as fallback).
 NEARBY_SEARCH_STRATEGY = env("NEARBY_SEARCH_STRATEGY", default="h3")
+
+# --- Redis ------------------------------------------------------------------
+REDIS_URL = env("REDIS_URL", default="redis://localhost:6380/0")
+# All keys live under "<prefix>:{live}:" (the hash tag keeps them in one cluster slot
+# so Lua scripts may touch several keys).
+REDIS_KEY_PREFIX = env("REDIS_KEY_PREFIX", default="rh")
+REDIS_SOCKET_TIMEOUT = env.float("REDIS_SOCKET_TIMEOUT", default=0.5)
+REDIS_CONNECT_TIMEOUT = env.float("REDIS_CONNECT_TIMEOUT", default=0.5)
+REDIS_RETRY_ATTEMPTS = env.int("REDIS_RETRY_ATTEMPTS", default=2)
+REDIS_HEALTH_CHECK_INTERVAL = env.int("REDIS_HEALTH_CHECK_INTERVAL", default=30)
+# Live driver keys expire this long after the last write (status + location).
+# Defaults to the auto-offline window.
+LIVE_DRIVER_TTL_SECONDS = env.int("LIVE_DRIVER_TTL_SECONDS", default=DRIVER_AUTO_OFFLINE_SECONDS)
 
 # --- Observability ----------------------------------------------------------
 METRICS_BACKEND = env("METRICS_BACKEND", default="apps.common.metrics.LoggingMetrics")

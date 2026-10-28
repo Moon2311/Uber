@@ -1,16 +1,18 @@
 """Location service: the single entry point for driver location reads and writes.
 
-Update flow (see docs/location-service.md):
+Update flow (see docs/location-service.md and docs/redis-hot-store.md):
 
     Driver app --POST /api/v1/locations/update/--> LocationUpdateView
         -> LocationUpdateSerializer   (shape, ranges, future-timestamp guard)
         -> LocationService.record_driver_update
-             1. lock driver row, require ONLINE                  (409 driver_offline)
-             2. normalise timestamp (clamp to server time)
-             3. drop fixes that are too old / too inaccurate     (accepted=false)
-             4. H3 cell for the fix (on failure the fix is still stored, without a cell:
+             1. normalise timestamp (clamp to server time)
+             2. drop fixes that are too old / too inaccurate     (accepted=false)
+             3. H3 cell for the fix (on failure the fix is still stored, without a cell:
                 invisible to H3 search until the next fix, visible to the bbox strategy)
-             5. LocationStore.upsert_if_newer                    (out-of-order safe)
+             4. LocationStore.upsert_if_newer: atomic "driver ONLINE and fix newer"
+                check + write + cell move (Redis Lua / PostgreSQL row lock)
+                                                                 (409 driver_offline)
+             5. (unknown status in Redis -> seed from PostgreSQL, retry once)
              6. sampled DriverLocationEvent history              (optional)
              7. structured log + metrics
 """
@@ -25,9 +27,8 @@ from decimal import Decimal
 from functools import lru_cache
 
 from django.conf import settings
-from django.db import transaction
+from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
-from django.utils.module_loading import import_string
 
 from apps.common.exceptions import ConflictError
 from apps.common.geo import bounding_box, haversine_km
@@ -35,8 +36,16 @@ from apps.common.metrics import metrics, timed
 from apps.geoindex.h3_index import GeoIndexError
 from apps.geoindex.service import GeoSearchService, get_geo_search_service
 
+from .failover import FailoverLocationStore
 from .models import DriverLocationEvent
-from .stores import BoundingBox, LocationFix, LocationStore
+from .stores import (
+    BoundingBox,
+    HistoryPoint,
+    LocationFix,
+    LocationStore,
+    PostgresLocationStore,
+    WriteStatus,
+)
 
 logger = logging.getLogger("apps.locations")
 
@@ -90,20 +99,7 @@ class LocationService:
         speed_kmh: float | None = None,
         accuracy_m: float | None = None,
     ) -> UpdateResult:
-        from apps.drivers.models import DriverProfile
-
-        with timed("location.update.duration_ms"), transaction.atomic():
-            # Row lock serialises with availability changes, so an update can never
-            # resurrect a location for a driver who has just gone offline.
-            locked = (
-                DriverProfile.objects.select_for_update()
-                .only("availability_status")
-                .get(pk=driver.pk)
-            )
-            if not locked.is_online:
-                self._observe(driver.pk, "rejected_offline")
-                raise DriverOfflineError()
-
+        with timed("location.update.duration_ms"):
             now = self.clock()
             fix = LocationFix(
                 driver_id=driver.pk,
@@ -123,14 +119,37 @@ class LocationService:
                 return self._ignored(fix, UpdateOutcome.LOW_ACCURACY)
 
             fix = self._with_cell(fix)
-            applied, current = self.store.upsert_if_newer(fix)
-            if not applied:
-                return self._ignored(fix, UpdateOutcome.OUT_OF_ORDER, current=current)
+            # The store enforces "driver must be ONLINE" atomically with the write.
+            result = self.store.upsert_if_newer(fix)
+            if result.status is WriteStatus.DRIVER_UNKNOWN:
+                # Live store lost the driver's status (Redis restart / TTL expiry):
+                # re-seed from PostgreSQL, the source of truth, and retry once.
+                self._seed_availability(driver.pk)
+                result = self.store.upsert_if_newer(fix)
+            if result.status in (WriteStatus.DRIVER_OFFLINE, WriteStatus.DRIVER_UNKNOWN):
+                self._observe(driver.pk, "rejected_offline")
+                raise DriverOfflineError()
+            if result.status is WriteStatus.NOT_NEWER:
+                return self._ignored(fix, UpdateOutcome.OUT_OF_ORDER, current=result.current)
 
-            history = self._maybe_record_history(current)
+            history = self._maybe_record_history(result.current)
 
         self._observe(driver.pk, UpdateOutcome.APPLIED.value, history_recorded=history)
-        return UpdateResult(UpdateOutcome.APPLIED, current, history_recorded=history)
+        return UpdateResult(UpdateOutcome.APPLIED, result.current, history_recorded=history)
+
+    def set_driver_availability(self, driver_id: int, *, online: bool, category: str | None):
+        """Mirror an availability change into the live store. Going offline also
+        drops the location and every index entry (atomically in Redis)."""
+        self.store.set_availability(driver_id, online=online, category=category)
+        if not online:
+            logger.info("location.cleared", extra={"driver_id": driver_id})
+
+    def _seed_availability(self, driver_id: int) -> None:
+        from apps.drivers.services import live_availability_snapshot
+
+        online, category = live_availability_snapshot(driver_id)
+        self.store.seed_availability(driver_id, online=online, category=category)
+        metrics().increment("location.store.availability_seeded")
 
     def clear(self, driver_id: int) -> None:
         """Forget a driver's latest location (e.g. when they go offline)."""
@@ -188,17 +207,14 @@ class LocationService:
     def _maybe_record_history(self, fix: LocationFix) -> bool:
         if not settings.LOCATION_HISTORY_ENABLED:
             return False
-        last = (
-            DriverLocationEvent.objects.filter(driver_id=fix.driver_id)
-            .order_by("-recorded_at")
-            .values("latitude", "longitude", "recorded_at")
-            .first()
-        )
+        # The marker lives in the hot store, so no PostgreSQL read per GPS ping. If it
+        # is missing (e.g. after a Redis restart) we record one extra sample.
+        last = self.store.last_history_point(fix.driver_id)
         if last is not None:
-            elapsed = (fix.recorded_at - last["recorded_at"]).total_seconds()
+            elapsed = (fix.recorded_at - last.recorded_at).total_seconds()
             moved_m = 1000 * haversine_km(
-                float(last["latitude"]),
-                float(last["longitude"]),
+                float(last.latitude),
+                float(last.longitude),
                 float(fix.latitude),
                 float(fix.longitude),
             )
@@ -219,6 +235,9 @@ class LocationService:
             accuracy_m=fix.accuracy_m,
             recorded_at=fix.recorded_at,
         )
+        self.store.mark_history_point(
+            fix.driver_id, HistoryPoint(fix.latitude, fix.longitude, fix.recorded_at)
+        )
         metrics().increment("location.history.recorded")
         return True
 
@@ -234,10 +253,42 @@ class LocationService:
         )
 
 
-@lru_cache(maxsize=1)
-def _store() -> LocationStore:
-    return import_string(settings.LOCATION_STORE_BACKEND)()
+def build_store() -> LocationStore:
+    """Store selected by settings (read on each call so tests can override)."""
+    return _build_store(
+        settings.LOCATION_STORE,
+        settings.LOCATION_STORE_FALLBACK,
+        settings.REDIS_URL,
+        settings.REDIS_KEY_PREFIX,
+        settings.LOCATION_STORE_CIRCUIT_COOLDOWN_SECONDS,
+    )
+
+
+@lru_cache(maxsize=8)
+def _build_store(kind, fallback, redis_url, prefix, cooldown) -> LocationStore:
+    # One instance per configuration and process: the circuit-breaker state and the
+    # Redis connection pool must be shared by all requests.
+    if kind == "postgres":
+        return PostgresLocationStore()
+    if kind != "redis":
+        raise ImproperlyConfigured(f"LOCATION_STORE must be 'redis' or 'postgres', not {kind!r}")
+    from .redis_store import RedisLocationStore
+
+    primary = RedisLocationStore(prefix=prefix)
+    if fallback == "none":
+        return primary
+    if fallback != "postgres":
+        raise ImproperlyConfigured("LOCATION_STORE_FALLBACK must be 'postgres' or 'none'")
+
+    def on_recovery(since):
+        from apps.drivers.services import resync_live_availability
+
+        resync_live_availability(changed_since=since)
+
+    return FailoverLocationStore(
+        primary, PostgresLocationStore(), cooldown_seconds=cooldown, on_recovery=on_recovery
+    )
 
 
 def get_location_service() -> LocationService:
-    return LocationService(_store(), geo=get_geo_search_service())
+    return LocationService(build_store(), geo=get_geo_search_service())

@@ -1,5 +1,4 @@
 from datetime import timedelta
-from decimal import Decimal
 
 import pytest
 from django.core.management import call_command
@@ -7,30 +6,17 @@ from django.utils import timezone
 
 from apps.drivers.models import AvailabilityStatus, DriverProfile
 from apps.drivers.services import expire_stale_drivers
-from apps.geoindex.service import get_geo_search_service
-from apps.locations.models import DriverLocation
-from apps.locations.stores import LocationFix, PostgresLocationStore
 from apps.trips.models import Trip, TripStatus
-from conftest import client_for, make_driver, make_rider
+from conftest import client_for, latest, live_store, make_driver, make_rider, seed_location
 
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("live_store_backend")]
 AVAILABILITY = "/api/v1/drivers/availability/"
 NEARBY = "/api/v1/drivers/nearby/"
 CENTER = (37.7749, -122.4194)
 
 
 def place(driver, lat=CENTER[0], lng=CENTER[1], seconds_ago=0):
-    geo = get_geo_search_service()
-    PostgresLocationStore().upsert_if_newer(
-        LocationFix(
-            driver_id=driver.pk,
-            latitude=Decimal(str(lat)),
-            longitude=Decimal(str(lng)),
-            recorded_at=timezone.now() - timedelta(seconds=seconds_ago),
-            h3_cell=geo.cell_for(lat, lng),
-            h3_resolution=geo.resolution,
-        )
-    )
+    seed_location(driver, lat, lng, seconds_ago=seconds_ago)
 
 
 def age_status_change(driver, seconds):
@@ -89,7 +75,7 @@ def test_cannot_go_offline_during_active_trip(driver, driver_client):
 def test_going_offline_clears_latest_location(driver, driver_client):
     place(driver)
     driver_client.post(AVAILABILITY, {"is_online": False}, format="json")
-    assert not DriverLocation.objects.filter(driver=driver).exists()
+    assert latest(driver) is None
 
 
 def test_availability_exposes_location_freshness(driver, driver_client, settings):
@@ -100,9 +86,8 @@ def test_availability_exposes_location_freshness(driver, driver_client, settings
     place(driver)
     body = driver_client.get(AVAILABILITY).json()
     assert body["is_available"] is True and body["location_freshness"] == "FRESH"
-    DriverLocation.objects.filter(driver=driver).update(
-        recorded_at=timezone.now() - timedelta(minutes=5)
-    )
+    live_store().remove(driver.pk)
+    place(driver, seconds_ago=300)
     body = driver_client.get(AVAILABILITY).json()
     assert body["is_available"] is False and body["location_freshness"] == "STALE"
 
@@ -122,7 +107,7 @@ def test_expire_stale_drivers(settings):
     assert statuses[fresh.pk] == AvailabilityStatus.ONLINE
     assert statuses[just_online.pk] == AvailabilityStatus.ONLINE
     assert statuses[stale.pk] == statuses[silent.pk] == AvailabilityStatus.OFFLINE
-    assert not DriverLocation.objects.filter(driver=stale).exists()
+    assert latest(stale) is None
 
 
 def test_expire_stale_drivers_keeps_driver_on_trip(settings, recorded_metrics):

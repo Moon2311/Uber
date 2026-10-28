@@ -2,40 +2,25 @@
 
 import math
 import random
-from datetime import timedelta
-from decimal import Decimal
 from io import StringIO
 
 import h3
 import pytest
 from django.core.management import call_command
-from django.utils import timezone
 
 from apps.common.geo import haversine_km
 from apps.drivers.candidates import find_candidate_drivers
 from apps.drivers.models import DriverProfile
 from apps.geoindex.service import get_geo_search_service
-from apps.locations.models import DriverLocation
-from apps.locations.stores import LocationFix, PostgresLocationStore
 from apps.trips.models import Trip, TripStatus
-from conftest import make_driver, make_rider
+from conftest import latest, make_driver, make_rider, seed_location
 
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("live_store_backend")]
 SF = (37.7749, -122.4194)
 
 
 def place(driver, lat, lng, seconds_ago=0, index=True):
-    geo = get_geo_search_service()
-    PostgresLocationStore().upsert_if_newer(
-        LocationFix(
-            driver_id=driver.pk,
-            latitude=Decimal(f"{lat:.6f}"),
-            longitude=Decimal(f"{lng:.6f}"),
-            recorded_at=timezone.now() - timedelta(seconds=seconds_ago),
-            h3_cell=geo.cell_for(lat, lng) if index else None,
-            h3_resolution=geo.resolution if index else None,
-        )
-    )
+    seed_location(driver, lat, lng, seconds_ago=seconds_ago, index=index)
 
 
 def search(lat=SF[0], lng=SF[1], radius_km=5.0, limit=25, **kw):
@@ -221,7 +206,7 @@ def test_resolution_change_needs_reindex_then_works(settings):
     settings.H3_RESOLUTION = 9
     assert search(strategy="h3", radius_km=1) == []  # old-resolution cells don't match
     call_command("reindex_driver_locations", stdout=StringIO())
-    row = DriverLocation.objects.get(driver=d)
+    row = latest(d)
     assert row.h3_resolution == 9 and h3.get_resolution(row.h3_cell) == 9
     assert ids(search(strategy="h3", radius_km=1)) == [d.pk]
 
