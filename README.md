@@ -10,6 +10,7 @@ been built yet** (see *Status*).
 |---|---|---|
 | 1 | Accounts, roles, drivers/vehicles, trips, pricing, payment records, JWT, health | Backend done & tested; **frontend pending** |
 | 2 | Location service (ordering, staleness, sampled history, store interface, metrics, logging) | Done & tested — see [docs/location-service.md](docs/location-service.md) |
+| 3 | H3 indexing: cell per latest location, bounded ring expansion, bbox fallback retained | Done & tested — see [docs/h3-geo-indexing.md](docs/h3-geo-indexing.md) |
 
 ## Quick start
 
@@ -39,6 +40,7 @@ API docs: Swagger UI at http://localhost:8000/api/docs/; the OpenAPI schema is a
 | `make lint` / `make format` | ruff lint + format check / autofix |
 | `make expire-stale` | Switch silent drivers offline (schedule every minute) |
 | `make prune-history` | Delete location history older than retention (schedule daily) |
+| `make reindex-locations` | Recompute H3 cells after changing `H3_RESOLUTION` |
 | `make schema` | Export OpenAPI to `docs/openapi.yml` |
 
 ## API (v1)
@@ -77,4 +79,8 @@ Errors always use this shape: `{"error": {"code", "message", "details"}}`.
 - **Explicit trip state machine** in `trips/state_machine.py`.
 - **Location storage behind `LocationStore`**, so Redis can be added without
   changing callers. See [docs/location-service.md](docs/location-service.md).
-- **Not yet introduced, on purpose:** Redis, Channels, Kafka, Cassandra, H3.
+- **H3 is isolated in `apps/geoindex`.** Candidate search depends on cells and
+  grid distances, never on a resolution, and falls back to bbox search on H3
+  errors. H3 grid distance is **not** road distance or travel time (see
+  [docs/h3-geo-indexing.md](docs/h3-geo-indexing.md)).
+- **Not yet introduced, on purpose:** Redis, Channels, Kafka, Cassandra.

@@ -33,6 +33,8 @@ class LocationFix:
     speed_kmh: float | None = None
     accuracy_m: float | None = None
     updated_at: datetime | None = None  # server receipt time of the stored fix
+    h3_cell: str | None = None
+    h3_resolution: int | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,10 @@ class LocationStore(ABC):
     @abstractmethod
     def find_in_bbox(self, bbox: BoundingBox, *, fresh_after: datetime) -> list[LocationFix]: ...
 
+    @abstractmethod
+    def find_in_cells(self, cells: list[str], *, fresh_after: datetime) -> list[LocationFix]:
+        """Fixes whose stored H3 cell is one of `cells` and recorded_at >= fresh_after."""
+
 
 def _from_model(row: DriverLocation) -> LocationFix:
     return LocationFix(
@@ -71,6 +77,8 @@ def _from_model(row: DriverLocation) -> LocationFix:
         speed_kmh=row.speed_kmh,
         accuracy_m=row.accuracy_m,
         updated_at=row.updated_at,
+        h3_cell=row.h3_cell,
+        h3_resolution=row.h3_resolution,
     )
 
 
@@ -82,8 +90,8 @@ class PostgresLocationStore(LocationStore):
     _UPSERT_SQL = f"""
         INSERT INTO {_table}
             (driver_id, latitude, longitude, heading, speed_kmh, accuracy_m,
-             recorded_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+             recorded_at, updated_at, h3_cell, h3_resolution)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (driver_id) DO UPDATE SET
             latitude = EXCLUDED.latitude,
             longitude = EXCLUDED.longitude,
@@ -91,7 +99,9 @@ class PostgresLocationStore(LocationStore):
             speed_kmh = EXCLUDED.speed_kmh,
             accuracy_m = EXCLUDED.accuracy_m,
             recorded_at = EXCLUDED.recorded_at,
-            updated_at = EXCLUDED.updated_at
+            updated_at = EXCLUDED.updated_at,
+            h3_cell = EXCLUDED.h3_cell,
+            h3_resolution = EXCLUDED.h3_resolution
         WHERE {_table}.recorded_at < EXCLUDED.recorded_at
         RETURNING driver_id
     """  # noqa: S608 - table name is a constant from model metadata, values are bound
@@ -110,6 +120,8 @@ class PostgresLocationStore(LocationStore):
                     fix.accuracy_m,
                     fix.recorded_at,
                     now,
+                    fix.h3_cell,
+                    fix.h3_resolution,
                 ],
             )
             applied = cursor.fetchone() is not None
@@ -132,4 +144,10 @@ class PostgresLocationStore(LocationStore):
             longitude__lte=bbox.max_lng,
             recorded_at__gte=fresh_after,
         )
+        return [_from_model(row) for row in rows]
+
+    def find_in_cells(self, cells: list[str], *, fresh_after: datetime) -> list[LocationFix]:
+        if not cells:
+            return []
+        rows = DriverLocation.objects.filter(h3_cell__in=cells, recorded_at__gte=fresh_after)
         return [_from_model(row) for row in rows]

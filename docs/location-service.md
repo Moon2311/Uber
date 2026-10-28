@@ -21,6 +21,7 @@ sequenceDiagram
     API->>Svc: record_driver_update(driver = request.user.driver_profile, ...)
     Svc->>Svc: BEGIN; SELECT driver FOR UPDATE; require ONLINE (else 409 driver_offline)
     Svc->>Svc: recorded_at = min(device time or now, now)
+    Svc->>Svc: h3_cell = latlng_to_cell(lat, lng, H3_RESOLUTION) (Step 3)
     alt older than LOCATION_MAX_AGE_SECONDS
         Svc-->>API: accepted=false, outcome=too_old
     else accuracy worse than LOCATION_MAX_ACCURACY_M
@@ -50,7 +51,9 @@ sequenceDiagram
 | Rules (status, age, accuracy, ordering, history, freshness) | `backend/apps/locations/service.py` |
 | Storage interface + PostgreSQL implementation | `backend/apps/locations/stores.py` |
 | Latest location / history tables | `backend/apps/locations/models.py` |
-| Availability = ONLINE + fresh, nearby search, auto-offline | `backend/apps/drivers/services.py` |
+| Availability = ONLINE + fresh, auto-offline | `backend/apps/drivers/services.py` |
+| Candidate search (H3 + bbox fallback) | `backend/apps/drivers/candidates.py` |
+| H3 cells / rings / bounds | `backend/apps/geoindex/` |
 | Metrics hooks | `backend/apps/common/metrics.py` |
 | JSON / key-value log formatters, redaction | `backend/apps/common/logging.py` |
 
@@ -201,8 +204,10 @@ storage. A `RedisLocationStore` must keep the same contract:
   `recorded_at`, for example a Lua script that does `HGET ts` and compares before
   `HSET`.
 - `get(driver_id)`, `remove(driver_id)` (idempotent).
-- `find_in_bbox(bbox, fresh_after)`: Redis `GEOSEARCH` plus a timestamp check.
-  This becomes H3-cell based in Step 3.
+- `find_in_bbox(bbox, fresh_after)`: Redis `GEOSEARCH` plus a timestamp check
+  (used by the retained bbox fallback).
+- `find_in_cells(cells, fresh_after)`: one Redis set per H3 cell (added in
+  Step 3, see [h3-geo-indexing.md](h3-geo-indexing.md)).
 
 `backend/apps/locations/tests/test_store.py` is written as a contract suite
 parametrised over store classes, so adding the Redis store means adding it to

@@ -17,6 +17,8 @@ _seq = itertools.count(1)
 def _isolate(settings):
     cache.clear()  # throttling counters live in the cache
     settings.METRICS_BACKEND = "apps.common.metrics.InMemoryMetrics"
+    # Production uses PBKDF2; tests only need *a* hash and create many users.
+    settings.PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
     metrics_module.metrics.cache_clear()
     yield
     metrics_module.metrics.cache_clear()

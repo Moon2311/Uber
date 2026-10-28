@@ -142,47 +142,19 @@ class NearbyDriver:
 def find_nearby_drivers(
     *, lat: float, lng: float, radius_km: float, category: str | None = None, limit: int
 ) -> list[NearbyDriver]:
-    """Available drivers near a point, nearest first.
+    """Available drivers near a point, nearest first (public, PII-free view)."""
+    from .candidates import find_candidate_drivers
 
-    Location filtering (radius + freshness) is delegated to the location service;
-    availability (ONLINE + active vehicle + category) is decided here, in the
-    drivers domain. H3 + Redis replace the geo part in a later step.
-    """
-    nearby = get_location_service().find_nearby(lat=lat, lng=lng, radius_km=radius_km)
-    if not nearby:
-        return []
-
-    vehicle_filter = {
-        "driver_id__in": [fix.driver_id for fix, _ in nearby],
-        "is_active": True,
-        "driver__availability_status": AvailabilityStatus.ONLINE,
-    }
-    if category:
-        vehicle_filter["category"] = category
-    eligible = {
-        driver_id: (public_id, vehicle_category)
-        for driver_id, public_id, vehicle_category in Vehicle.objects.filter(
-            **vehicle_filter
-        ).values_list("driver_id", "driver__public_id", "category")
-    }
-
-    results = []
-    for fix, distance in nearby:
-        if fix.driver_id not in eligible:
-            continue
-        public_id, vehicle_category = eligible[fix.driver_id]
-        results.append(
-            NearbyDriver(
-                public_id=str(public_id),
-                latitude=float(fix.latitude),
-                longitude=float(fix.longitude),
-                heading=fix.heading,
-                distance_km=round(distance, 3),
-                category=vehicle_category,
-            )
+    return [
+        NearbyDriver(
+            public_id=c.public_id,
+            latitude=c.latitude,
+            longitude=c.longitude,
+            heading=c.heading,
+            distance_km=round(c.distance_km, 3),
+            category=c.category,
         )
-        if len(results) >= limit:
-            break
-    metrics().increment("drivers.nearby.search")
-    metrics().gauge("drivers.nearby.results", len(results))
-    return results
+        for c in find_candidate_drivers(
+            lat=lat, lng=lng, radius_km=radius_km, category=category, limit=limit
+        )
+    ]

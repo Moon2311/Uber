@@ -26,9 +26,16 @@ class DriverLocation(models.Model):
     recorded_at = models.DateTimeField(db_index=True)
     # Server time the latest applied update was received.
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
+    # H3 cell of (latitude, longitude) at `h3_resolution`. Null only if indexing
+    # failed; such rows are skipped by H3 search (bbox strategy still sees them).
+    h3_cell = models.CharField(max_length=16, null=True, blank=True)  # noqa: DJ001 - NULL = not indexed
+    h3_resolution = models.PositiveSmallIntegerField(null=True, blank=True)
 
     class Meta:
-        indexes = [models.Index(fields=["latitude", "longitude"], name="driverloc_lat_lng_idx")]
+        indexes = [
+            models.Index(fields=["latitude", "longitude"], name="driverloc_lat_lng_idx"),
+            models.Index(fields=["h3_cell", "recorded_at"], name="driverloc_h3_fresh_idx"),
+        ]
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(latitude__gte=-90) & models.Q(latitude__lte=90),

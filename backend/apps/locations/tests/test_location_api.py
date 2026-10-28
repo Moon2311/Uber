@@ -255,3 +255,42 @@ def test_structured_log_has_no_coordinates(driver_client, caplog):
     records = [r for r in caplog.records if r.getMessage() == "location.update"]
     assert records and records[0].outcome == "out_of_order" and records[0].driver_id
     assert "22.22" not in caplog.text and "11.11" not in caplog.text
+
+
+# --- H3 (step 3) ---------------------------------------------------------------
+def test_update_stores_h3_cell_at_configured_resolution(driver_client, driver, settings):
+    import h3
+
+    settings.H3_RESOLUTION = 9
+    post(driver_client, lat=37.7749, lng=-122.4194)
+    row = DriverLocation.objects.get(driver=driver)
+    assert row.h3_cell == h3.latlng_to_cell(37.7749, -122.4194, 9) and row.h3_resolution == 9
+
+
+def test_cell_moves_with_the_driver(driver_client, driver):
+    now = timezone.now()
+    post(driver_client, lat=37.7749, recorded_at=iso(now - timedelta(seconds=5)))
+    first = DriverLocation.objects.get(driver=driver).h3_cell
+    post(driver_client, lat=37.80, recorded_at=iso(now))
+    assert DriverLocation.objects.get(driver=driver).h3_cell != first
+
+
+def test_out_of_order_update_does_not_change_cell(driver_client, driver):
+    now = timezone.now()
+    post(driver_client, lat=37.7749, recorded_at=iso(now))
+    cell = DriverLocation.objects.get(driver=driver).h3_cell
+    post(driver_client, lat=37.90, recorded_at=iso(now - timedelta(seconds=10)))
+    assert DriverLocation.objects.get(driver=driver).h3_cell == cell
+
+
+def test_h3_failure_never_loses_the_fix(driver_client, driver, monkeypatch, recorded_metrics):
+    import h3
+
+    def boom(*args):
+        raise h3.H3FailedError("simulated")
+
+    monkeypatch.setattr(h3, "latlng_to_cell", boom)
+    assert post(driver_client).json()["accepted"] is True
+    row = DriverLocation.objects.get(driver=driver)
+    assert row.h3_cell is None and row.latitude is not None
+    assert recorded_metrics.count("location.h3.index_error") == 1

@@ -1,6 +1,6 @@
 PY := backend/.venv/bin/python
 
-.PHONY: db up down migrate run test lint format expire-stale prune-history schema
+.PHONY: db up down migrate run test lint format expire-stale prune-history reindex-locations schema
 
 db:            ## start PostgreSQL only
 	docker compose up -d db
@@ -22,5 +22,7 @@ expire-stale:  ## switch silent drivers offline (schedule every minute)
 	cd backend && ../$(PY) manage.py expire_stale_drivers
 prune-history: ## delete location history past retention (schedule daily)
 	cd backend && ../$(PY) manage.py prune_location_history
+reindex-locations: ## recompute H3 cells after changing H3_RESOLUTION
+	cd backend && ../$(PY) manage.py reindex_driver_locations
 schema:
 	cd backend && ../$(PY) manage.py spectacular --file ../docs/openapi.yml

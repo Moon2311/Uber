@@ -209,6 +209,16 @@ LOCATION_HISTORY_MAX_INTERVAL_SECONDS = env.int(
 )
 LOCATION_HISTORY_RETENTION_DAYS = env.int("LOCATION_HISTORY_RETENTION_DAYS", default=30)
 
+# --- H3 geographic indexing (see docs/h3-geo-indexing.md) -------------------
+# Resolution of the cell stored with each latest location. 8 ~ 0.53 km edge.
+# After changing it run `manage.py reindex_driver_locations` (rows also self-heal
+# on the next GPS update).
+H3_RESOLUTION = env.int("H3_RESOLUTION", default=8)
+# Hard cap on ring expansion; radii needing more rings use the bbox fallback.
+H3_MAX_GRID_DISTANCE = env.int("H3_MAX_GRID_DISTANCE", default=40)
+# "h3" (default) or "bbox" (step 1/2 implementation, kept as fallback).
+NEARBY_SEARCH_STRATEGY = env("NEARBY_SEARCH_STRATEGY", default="h3")
+
 # --- Observability ----------------------------------------------------------
 METRICS_BACKEND = env("METRICS_BACKEND", default="apps.common.metrics.LoggingMetrics")
 

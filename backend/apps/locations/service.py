@@ -8,16 +8,18 @@ Update flow (see docs/location-service.md):
              1. lock driver row, require ONLINE                  (409 driver_offline)
              2. normalise timestamp (clamp to server time)
              3. drop fixes that are too old / too inaccurate     (accepted=false)
-             4. LocationStore.upsert_if_newer                    (out-of-order safe)
-             5. sampled DriverLocationEvent history              (optional)
-             6. structured log + metrics
+             4. H3 cell for the fix (on failure the fix is still stored, without a cell:
+                invisible to H3 search until the next fix, visible to the bbox strategy)
+             5. LocationStore.upsert_if_newer                    (out-of-order safe)
+             6. sampled DriverLocationEvent history              (optional)
+             7. structured log + metrics
 """
 
 from __future__ import annotations
 
 import enum
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
@@ -30,6 +32,8 @@ from django.utils.module_loading import import_string
 from apps.common.exceptions import ConflictError
 from apps.common.geo import bounding_box, haversine_km
 from apps.common.metrics import metrics, timed
+from apps.geoindex.h3_index import GeoIndexError
+from apps.geoindex.service import GeoSearchService, get_geo_search_service
 
 from .models import DriverLocationEvent
 from .stores import BoundingBox, LocationFix, LocationStore
@@ -67,8 +71,11 @@ class UpdateResult:
 
 
 class LocationService:
-    def __init__(self, store: LocationStore, clock=timezone.now):
+    def __init__(
+        self, store: LocationStore, geo: GeoSearchService | None = None, clock=timezone.now
+    ):
         self.store = store
+        self.geo = geo
         self.clock = clock
 
     # --- writes -----------------------------------------------------------
@@ -115,6 +122,7 @@ class LocationService:
             if accuracy_m is not None and accuracy_m > settings.LOCATION_MAX_ACCURACY_M:
                 return self._ignored(fix, UpdateOutcome.LOW_ACCURACY)
 
+            fix = self._with_cell(fix)
             applied, current = self.store.upsert_if_newer(fix)
             if not applied:
                 return self._ignored(fix, UpdateOutcome.OUT_OF_ORDER, current=current)
@@ -154,7 +162,23 @@ class LocationService:
         results.sort(key=lambda item: item[1])
         return results
 
+    def find_in_cells(self, cells: list[str]) -> list[LocationFix]:
+        """Fresh fixes located in any of `cells` (unordered, unfiltered by distance)."""
+        return self.store.find_in_cells(cells, fresh_after=self.stale_cutoff())
+
     # --- internals --------------------------------------------------------
+    def _with_cell(self, fix: LocationFix) -> LocationFix:
+        if self.geo is None:
+            return fix
+        try:
+            cell = self.geo.cell_for(float(fix.latitude), float(fix.longitude))
+        except GeoIndexError:
+            # Never lose a valid GPS fix because indexing failed.
+            metrics().increment("location.h3.index_error")
+            logger.warning("location.h3.index_error", extra={"driver_id": fix.driver_id})
+            return fix
+        return replace(fix, h3_cell=cell, h3_resolution=self.geo.resolution)
+
     def _ignored(self, fix, outcome, current=None) -> UpdateResult:
         self._observe(fix.driver_id, outcome.value)
         if current is None:
@@ -216,14 +240,4 @@ def _store() -> LocationStore:
 
 
 def get_location_service() -> LocationService:
-    return LocationService(_store())
-
-
-__all__ = [
-    "DriverOfflineError",
-    "Freshness",
-    "LocationService",
-    "UpdateOutcome",
-    "UpdateResult",
-    "get_location_service",
-]
+    return LocationService(_store(), geo=get_geo_search_service())

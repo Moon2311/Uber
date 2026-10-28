@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from apps.drivers.models import AvailabilityStatus, DriverProfile
 from apps.drivers.services import expire_stale_drivers
+from apps.geoindex.service import get_geo_search_service
 from apps.locations.models import DriverLocation
 from apps.locations.stores import LocationFix, PostgresLocationStore
 from apps.trips.models import Trip, TripStatus
@@ -19,12 +20,15 @@ CENTER = (37.7749, -122.4194)
 
 
 def place(driver, lat=CENTER[0], lng=CENTER[1], seconds_ago=0):
+    geo = get_geo_search_service()
     PostgresLocationStore().upsert_if_newer(
         LocationFix(
             driver_id=driver.pk,
             latitude=Decimal(str(lat)),
             longitude=Decimal(str(lng)),
             recorded_at=timezone.now() - timedelta(seconds=seconds_ago),
+            h3_cell=geo.cell_for(lat, lng),
+            h3_resolution=geo.resolution,
         )
     )
 
@@ -151,12 +155,18 @@ def test_expire_stale_drivers_command(settings, capsys):
     assert "Switched 1" in capsys.readouterr().out
 
 
-# --- nearby ----------------------------------------------------------------------
+# --- nearby (runs against both the H3 search and the retained bbox fallback) -----
+@pytest.fixture(params=["h3", "bbox"])
+def strategy(request, settings):
+    settings.NEARBY_SEARCH_STRATEGY = request.param
+    return request.param
+
+
 def nearby(client, **params):
     return client.get(NEARBY, {"lat": CENTER[0], "lng": CENTER[1], **params})
 
 
-def test_nearby_returns_only_available_fresh_drivers_sorted(rider_client, settings):
+def test_nearby_returns_only_available_fresh_drivers_sorted(strategy, rider_client, settings):
     settings.DRIVER_LOCATION_STALE_SECONDS = 120
     close, far, offline, stale, out_of_range = (make_driver(online=True) for _ in range(5))
     place(close, CENTER[0] + 0.001)
@@ -170,7 +180,7 @@ def test_nearby_returns_only_available_fresh_drivers_sorted(rider_client, settin
     assert body["count"] == 2
 
 
-def test_nearby_filters_by_category(rider_client):
+def test_nearby_filters_by_category(strategy, rider_client):
     economy, xl = make_driver(online=True), make_driver(online=True, category="XL")
     place(economy)
     place(xl)
@@ -178,7 +188,7 @@ def test_nearby_filters_by_category(rider_client):
     assert [r["id"] for r in body["results"]] == [str(xl.public_id)]
 
 
-def test_nearby_exposes_no_personal_data(rider_client):
+def test_nearby_exposes_no_personal_data(strategy, rider_client):
     place(make_driver(online=True))
     result = nearby(rider_client).json()["results"][0]
     assert set(result) == {"id", "lat", "lng", "heading", "distance_km", "category"}
@@ -199,7 +209,7 @@ def test_nearby_requires_auth(api_client):
     assert nearby(api_client).status_code == 401
 
 
-def test_nearby_respects_result_limit(rider_client, settings):
+def test_nearby_respects_result_limit(strategy, rider_client, settings):
     settings.NEARBY_DRIVERS_MAX_RESULTS = 2
     for _ in range(4):
         place(make_driver(online=True))
