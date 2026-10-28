@@ -5,6 +5,7 @@ from django.utils import timezone
 from apps.common.exceptions import ConflictError
 
 from .models import Trip, TripStatus
+from .signals import trip_status_changed
 
 S = TripStatus
 
@@ -34,6 +35,7 @@ def transition(trip: Trip, target: str, **changes) -> Trip:
     """Apply a status change to a row that the caller has locked (select_for_update)."""
     if not can_transition(trip.status, target):
         raise ConflictError(f"Cannot change trip status from {trip.status} to {target}.")
+    previous = trip.status
     trip.status = target
     update_fields = ["status", "updated_at"]
     if field := _TIMESTAMP_FIELD.get(target):
@@ -43,4 +45,12 @@ def transition(trip: Trip, target: str, **changes) -> Trip:
         setattr(trip, name, value)
         update_fields.append(name)
     trip.save(update_fields=update_fields)
+    # Same transaction as the status change -> outbox (apps.events).
+    trip_status_changed.send(
+        sender=Trip,
+        trip=trip,
+        from_status=previous,
+        to_status=target,
+        reason=changes.get("cancellation_reason"),
+    )
     return trip

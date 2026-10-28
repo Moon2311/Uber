@@ -1,9 +1,9 @@
 PY := backend/.venv/bin/python
 
-.PHONY: db up down migrate run test lint format expire-stale prune-history reindex-locations reconcile-live rebuild-live prune-live schema
+.PHONY: db up down migrate run test lint format expire-stale prune-history reindex-locations reconcile-live rebuild-live prune-live topics relay consume events-status prune-events schema
 
-db:            ## start PostgreSQL + Redis
-	docker compose up -d db redis
+db:            ## start PostgreSQL + Redis + Kafka
+	docker compose up -d db redis kafka
 up:            ## start db + backend in docker
 	docker compose up -d --build
 down:
@@ -30,5 +30,15 @@ rebuild-live:  ## full rebuild of the Redis live index from PostgreSQL
 	cd backend && ../$(PY) manage.py rebuild_live_index
 prune-live:    ## drop expired drivers from Redis indexes (every minute)
 	cd backend && ../$(PY) manage.py prune_live_index
+topics:        ## create Kafka topics with their retention policies
+	cd backend && ../$(PY) manage.py ensure_kafka_topics --wait 60
+relay:         ## run the outbox relay (long-lived)
+	cd backend && ../$(PY) manage.py run_outbox_relay
+consume:       ## run the analytics consumer group (long-lived)
+	cd backend && ../$(PY) manage.py run_event_consumer analytics
+events-status: ## outbox backlog, Kafka reachability, consumer lag + heartbeats
+	cd backend && ../$(PY) manage.py event_pipeline_status
+prune-events:  ## delete old published outbox rows / dedupe records (daily)
+	cd backend && ../$(PY) manage.py prune_event_tables
 schema:
 	cd backend && ../$(PY) manage.py spectacular --file ../docs/openapi.yml

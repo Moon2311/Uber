@@ -7,6 +7,7 @@ from apps.pricing.services import Point, get_fare_estimator
 
 from . import state_machine
 from .models import Trip, TripStatus
+from .signals import trip_requested
 
 RIDER_CANCELLABLE = {
     TripStatus.REQUESTED,
@@ -44,6 +45,7 @@ def request_trip(*, rider: User, pickup: dict, dropoff: dict, ride_category: str
         currency=estimate.currency,
     )
     create_pending_payment(trip=trip)
+    trip_requested.send(sender=Trip, trip=trip)
     return trip
 
 

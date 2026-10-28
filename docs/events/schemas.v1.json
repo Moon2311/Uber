@@ -1,0 +1,409 @@
+{
+  "DriverAvailabilityChanged.v1": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "DriverAvailabilityChanged v1",
+    "description": "",
+    "type": "object",
+    "properties": {
+      "driver_id": {
+        "type": "integer"
+      },
+      "status": {
+        "type": "string"
+      },
+      "previous_status": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "reason": {
+        "type": "string"
+      },
+      "vehicle_category": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "changed_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "required": [
+      "driver_id",
+      "status",
+      "previous_status",
+      "reason",
+      "vehicle_category",
+      "changed_at"
+    ]
+  },
+  "DriverLocationUpdated.v1": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "DriverLocationUpdated v1",
+    "description": "Sampled driver position. NOT every GPS ping.",
+    "type": "object",
+    "properties": {
+      "driver_id": {
+        "type": "integer"
+      },
+      "lat": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$"
+      },
+      "lng": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$"
+      },
+      "recorded_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "h3_cell": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "h3_resolution": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "heading": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "speed_kmh": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "driver_id",
+      "lat",
+      "lng",
+      "recorded_at",
+      "h3_cell",
+      "h3_resolution",
+      "reason"
+    ]
+  },
+  "RideAccepted.v1": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "RideAccepted v1",
+    "description": "",
+    "type": "object",
+    "properties": {
+      "trip_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "offer_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "driver_id": {
+        "type": "integer"
+      },
+      "accepted_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "required": [
+      "trip_id",
+      "offer_id",
+      "driver_id",
+      "accepted_at"
+    ]
+  },
+  "RideOfferCreated.v1": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "RideOfferCreated v1",
+    "description": "",
+    "type": "object",
+    "properties": {
+      "trip_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "offer_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "driver_id": {
+        "type": "integer"
+      },
+      "expires_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "straight_line_km": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "grid_distance": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "required": [
+      "trip_id",
+      "offer_id",
+      "driver_id",
+      "expires_at",
+      "straight_line_km",
+      "grid_distance",
+      "created_at"
+    ]
+  },
+  "RideRequested.v1": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "RideRequested v1",
+    "description": "",
+    "type": "object",
+    "properties": {
+      "trip_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "rider_id": {
+        "type": "integer"
+      },
+      "ride_category": {
+        "type": "string"
+      },
+      "pickup_lat": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$"
+      },
+      "pickup_lng": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$"
+      },
+      "dropoff_lat": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$"
+      },
+      "dropoff_lng": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$"
+      },
+      "pickup_h3_cell": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "estimated_fare": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$"
+      },
+      "currency": {
+        "type": "string"
+      },
+      "requested_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "required": [
+      "trip_id",
+      "rider_id",
+      "ride_category",
+      "pickup_lat",
+      "pickup_lng",
+      "dropoff_lat",
+      "dropoff_lng",
+      "pickup_h3_cell",
+      "estimated_fare",
+      "currency",
+      "requested_at"
+    ]
+  },
+  "TripCompleted.v1": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "TripCompleted v1",
+    "description": "Informational. The trip and payment records in PostgreSQL remain authoritative; never settle payments from this event.",
+    "type": "object",
+    "properties": {
+      "trip_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "rider_id": {
+        "type": "integer"
+      },
+      "driver_id": {
+        "type": "integer"
+      },
+      "ride_category": {
+        "type": "string"
+      },
+      "estimated_fare": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$"
+      },
+      "final_fare": {
+        "anyOf": [
+          {
+            "type": "string",
+            "pattern": "^-?\\d+(\\.\\d+)?$"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "currency": {
+        "type": "string"
+      },
+      "estimated_distance_km": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$"
+      },
+      "started_at": {
+        "anyOf": [
+          {
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "completed_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "required": [
+      "trip_id",
+      "rider_id",
+      "driver_id",
+      "ride_category",
+      "estimated_fare",
+      "final_fare",
+      "currency",
+      "estimated_distance_km",
+      "started_at",
+      "completed_at"
+    ]
+  },
+  "TripStatusChanged.v1": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "TripStatusChanged v1",
+    "description": "",
+    "type": "object",
+    "properties": {
+      "trip_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "from_status": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "to_status": {
+        "type": "string"
+      },
+      "rider_id": {
+        "type": "integer"
+      },
+      "driver_id": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "changed_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "required": [
+      "trip_id",
+      "from_status",
+      "to_status",
+      "rider_id",
+      "driver_id",
+      "changed_at"
+    ]
+  }
+}

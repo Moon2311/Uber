@@ -31,6 +31,8 @@ def _isolate(settings):
     settings.LOCATION_STORE = "postgres"
     settings.REDIS_URL = TEST_REDIS_URL
     settings.REDIS_KEY_PREFIX = f"test-{uuid.uuid4().hex[:12]}"
+    # Kafka is opt-in per test (kafka_topics fixture); outbox rows are still written.
+    settings.KAFKA_ENABLED = False
     metrics_module.metrics.cache_clear()
     yield
     metrics_module.metrics.cache_clear()
@@ -185,3 +187,28 @@ def driver_client(driver):
 
 
 SF = {"lat": Decimal("37.774900"), "lng": Decimal("-122.419400")}
+
+
+TEST_KAFKA_BOOTSTRAP = os.environ.get("TEST_KAFKA_BOOTSTRAP", "localhost:9094")
+
+
+@pytest.fixture
+def kafka_topics(settings):
+    """Real Kafka with topics/groups under a unique prefix (deleted afterwards)."""
+    from confluent_kafka import KafkaException
+
+    from apps.events import kafka
+    from apps.events.topics import TOPICS
+
+    settings.KAFKA_ENABLED = True
+    settings.KAFKA_BOOTSTRAP_SERVERS = TEST_KAFKA_BOOTSTRAP
+    settings.KAFKA_TOPIC_PREFIX = f"test-{uuid.uuid4().hex[:10]}."
+    kafka._shared_publisher.cache_clear()
+    try:
+        kafka.ensure_topics(timeout=10)
+    except KafkaException as exc:
+        pytest.fail(f"Kafka tests need a broker at {TEST_KAFKA_BOOTSTRAP} (make db): {exc}")
+    names = [spec.name for spec in TOPICS.values()]  # capture before tests mutate settings
+    yield settings.KAFKA_TOPIC_PREFIX
+    kafka.delete_topics(names, bootstrap=TEST_KAFKA_BOOTSTRAP)
+    kafka._shared_publisher.cache_clear()

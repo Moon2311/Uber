@@ -3,7 +3,7 @@ import logging
 from django.db import connection
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers, status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -24,6 +24,7 @@ class HealthView(APIView):
                 "status": serializers.CharField(),
                 "database": serializers.CharField(),
                 "live_store": serializers.DictField(),
+                "events": serializers.DictField(),
             },
         )
     )
@@ -38,16 +39,47 @@ class HealthView(APIView):
             db_status = "unavailable"
 
         live = _live_store_health()
+        events = _events_health() if db_status == "ok" else {"status": "unknown"}
         if db_status != "ok":
             overall, code = "unavailable", status.HTTP_503_SERVICE_UNAVAILABLE
-        elif live["status"] == "ok":
+        elif live["status"] == "ok" and events["status"] != "degraded":
             overall, code = "ok", status.HTTP_200_OK
         elif live["status"] == "degraded":
             # Redis down but PostgreSQL fallback serving: stay in rotation.
             overall, code = "degraded", status.HTTP_200_OK
+        elif live["status"] == "ok" and events["status"] == "degraded":
+            # Kafka trouble never takes the API out of rotation: events wait in the
+            # PostgreSQL outbox.
+            overall, code = "degraded", status.HTTP_200_OK
         else:
             overall, code = "unavailable", status.HTTP_503_SERVICE_UNAVAILABLE
-        return Response({"status": overall, "database": db_status, "live_store": live}, status=code)
+        return Response(
+            {"status": overall, "database": db_status, "live_store": live, "events": events},
+            status=code,
+        )
+
+
+class EventsHealthView(APIView):
+    """Detailed event-pipeline health incl. consumer lag. Staff only (internal
+    topology); load balancers should use /api/v1/health/."""
+
+    permission_classes = [IsAdminUser]
+
+    @extend_schema(responses=inline_serializer("EventsHealth", {"status": serializers.CharField()}))
+    def get(self, request):
+        from apps.events.monitoring import detailed
+
+        return Response(detailed())
+
+
+def _events_health() -> dict:
+    try:
+        from apps.events.monitoring import summary
+
+        return summary()
+    except Exception as exc:  # noqa: BLE001 - health must never raise
+        logger.exception("Health check: events error")
+        return {"status": "degraded", "error": type(exc).__name__}
 
 
 def _live_store_health() -> dict:

@@ -12,12 +12,14 @@ been built yet** (see *Status*).
 | 2 | Location service (ordering, staleness, sampled history, store interface, metrics, logging) | Done & tested — see [docs/location-service.md](docs/location-service.md) |
 | 3 | H3 indexing: cell per latest location, bounded ring expansion, bbox fallback retained | Done & tested — see [docs/h3-geo-indexing.md](docs/h3-geo-indexing.md) |
 | 4 | Redis hot store: live locations, availability mirror, H3 cell sets, Lua atomicity, TTLs, failover to PostgreSQL, reconcile/rebuild | Done & tested — see [docs/redis-hot-store.md](docs/redis-hot-store.md) |
+| 5 | Kafka event streaming: versioned schemas, transactional outbox + relay, idempotent consumers, retries + DLQ, lag/health monitoring, sampled GPS stream | Done & tested — see [docs/event-streaming.md](docs/event-streaming.md) |
 
 ## Quick start
 
 ```bash
 cp .env.example .env            # then set POSTGRES_PASSWORD / DJANGO_SECRET_KEY / DATABASE_URL
-docker compose up -d --build    # PostgreSQL :5433, Redis :6380, API :8000 (migrates on start)
+docker compose up -d --build    # PostgreSQL :5433, Redis :6380, Kafka :9094, API :8000,
+                                # + outbox-relay and consumer-analytics workers
 curl localhost:8000/api/v1/health/
 ```
 
@@ -26,7 +28,8 @@ Running the backend on the host instead (for development):
 ```bash
 python3 -m venv backend/.venv
 backend/.venv/bin/pip install -r backend/requirements-dev.txt
-make db          # PostgreSQL + Redis
+make db          # PostgreSQL + Redis + Kafka
+make topics      # create Kafka topics
 make migrate
 make run         # http://localhost:8000
 ```
@@ -37,7 +40,7 @@ API docs: Swagger UI at http://localhost:8000/api/docs/; the OpenAPI schema is a
 
 | Command | What it does |
 |---|---|
-| `make test` | pytest against PostgreSQL + Redis (throw-away test DB; Redis DB 15, per-test key prefix) |
+| `make test` | pytest against PostgreSQL + Redis + Kafka (throw-away test DB; Redis DB 15; per-test topic prefix, deleted afterwards) |
 | `make lint` / `make format` | ruff lint + format check / autofix |
 | `make expire-stale` | Switch silent drivers offline (schedule every minute) |
 | `make prune-history` | Delete location history older than retention (schedule daily) |
@@ -45,6 +48,9 @@ API docs: Swagger UI at http://localhost:8000/api/docs/; the OpenAPI schema is a
 | `make reconcile-live` | Replay Redis-outage fallback writes / resync after Redis data loss (schedule every minute) |
 | `make prune-live` | Drop expired drivers from Redis indexes (schedule every minute) |
 | `make rebuild-live` | Full rebuild of the Redis live index from PostgreSQL |
+| `make relay` / `make consume` | Run the outbox relay / analytics consumer on the host |
+| `make events-status` | Outbox backlog, Kafka reachability, consumer lag and heartbeats |
+| `make prune-events` | Delete old published outbox rows and dedupe records (schedule daily) |
 | `make schema` | Export OpenAPI to `docs/openapi.yml` |
 
 ## API (v1)
@@ -63,6 +69,7 @@ API docs: Swagger UI at http://localhost:8000/api/docs/; the OpenAPI schema is a
 | GET | `/api/v1/trips/{id}/` · `/api/v1/trips/history/` | owner (rider or assigned driver) |
 | POST | `/api/v1/trips/{id}/cancel/` | owning rider |
 | GET | `/api/v1/health/` | anyone |
+| GET | `/api/v1/health/events/` | staff (consumer lag per partition) |
 
 Errors always use this shape: `{"error": {"code", "message", "details"}}`.
 
@@ -91,4 +98,10 @@ Errors always use this shape: `{"error": {"code", "message", "details"}}`.
   mirror and H3 cell sets. PostgreSQL is the source of truth for every
   application record. Everything in Redis can be rebuilt, and the app degrades to
   PostgreSQL when Redis is down (see [docs/redis-hot-store.md](docs/redis-hot-store.md)).
-- **Not yet introduced, on purpose:** Channels, Kafka, Cassandra.
+- **Kafka distributes facts; it is not a source of truth.** Business code sends
+  Django signals. Trip and availability events go through a transactional
+  outbox (same PostgreSQL transaction), and a single relay publishes them in
+  order. Consumers are idempotent through a processed-event ledger and
+  dead-letter permanent failures. GPS is sampled (cell change or 15 s) to a
+  1-hour topic. See [docs/event-streaming.md](docs/event-streaming.md).
+- **Not yet introduced, on purpose:** Channels, Cassandra.

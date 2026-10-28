@@ -48,6 +48,8 @@ INSTALLED_APPS = [
     "apps.pricing",
     "apps.trips",
     "apps.payments",
+    "apps.events",
+    "apps.analytics",
 ]
 
 MIDDLEWARE = [
@@ -235,6 +237,37 @@ REDIS_HEALTH_CHECK_INTERVAL = env.int("REDIS_HEALTH_CHECK_INTERVAL", default=30)
 # Live driver keys expire this long after the last write (status + location).
 # Defaults to the auto-offline window.
 LIVE_DRIVER_TTL_SECONDS = env.int("LIVE_DRIVER_TTL_SECONDS", default=DRIVER_AUTO_OFFLINE_SECONDS)
+
+# --- Kafka / events (see docs/event-streaming.md) ----------------------------
+KAFKA_ENABLED = env.bool("KAFKA_ENABLED", default=True)
+KAFKA_BOOTSTRAP_SERVERS = env("KAFKA_BOOTSTRAP_SERVERS", default="localhost:9094")
+KAFKA_CLIENT_ID = env("KAFKA_CLIENT_ID", default="ride-hailing")
+# Prefix for topic and consumer-group names (isolates environments / test runs).
+KAFKA_TOPIC_PREFIX = env("KAFKA_TOPIC_PREFIX", default="")
+KAFKA_REPLICATION_FACTOR = env.int("KAFKA_REPLICATION_FACTOR", default=1)
+KAFKA_DELIVERY_TIMEOUT_SECONDS = env.float("KAFKA_DELIVERY_TIMEOUT_SECONDS", default=10.0)
+# Outbox relay
+OUTBOX_BATCH_SIZE = env.int("OUTBOX_BATCH_SIZE", default=200)
+OUTBOX_POLL_INTERVAL_SECONDS = env.float("OUTBOX_POLL_INTERVAL_SECONDS", default=0.5)
+OUTBOX_RETRY_BASE_SECONDS = env.float("OUTBOX_RETRY_BASE_SECONDS", default=1.0)
+OUTBOX_RETRY_MAX_SECONDS = env.float("OUTBOX_RETRY_MAX_SECONDS", default=60.0)
+# ~50 attempts with backoff capped at 60 s = ~45 min of retrying before giving up.
+OUTBOX_MAX_ATTEMPTS = env.int("OUTBOX_MAX_ATTEMPTS", default=50)
+OUTBOX_RETENTION_DAYS = env.int("OUTBOX_RETENTION_DAYS", default=7)
+# Consumers
+CONSUMER_MAX_RETRIES = env.int("CONSUMER_MAX_RETRIES", default=4)
+CONSUMER_RETRY_BASE_SECONDS = env.float("CONSUMER_RETRY_BASE_SECONDS", default=0.5)
+CONSUMER_RETRY_MAX_SECONDS = env.float("CONSUMER_RETRY_MAX_SECONDS", default=8.0)
+CONSUMER_INFRA_PAUSE_SECONDS = env.float("CONSUMER_INFRA_PAUSE_SECONDS", default=5.0)
+CONSUMER_HEARTBEAT_SECONDS = env.float("CONSUMER_HEARTBEAT_SECONDS", default=10.0)
+PROCESSED_EVENT_RETENTION_DAYS = env.int("PROCESSED_EVENT_RETENTION_DAYS", default=14)
+# Health thresholds
+EVENTS_OUTBOX_MAX_AGE_SECONDS = env.int("EVENTS_OUTBOX_MAX_AGE_SECONDS", default=60)
+EVENTS_CONSUMER_MAX_LAG = env.int("EVENTS_CONSUMER_MAX_LAG", default=1000)
+EVENTS_CONSUMER_STALE_SECONDS = env.int("EVENTS_CONSUMER_STALE_SECONDS", default=60)
+# Sampled location stream
+LOCATION_EVENTS_ENABLED = env.bool("LOCATION_EVENTS_ENABLED", default=True)
+LOCATION_EVENT_MIN_INTERVAL_SECONDS = env.int("LOCATION_EVENT_MIN_INTERVAL_SECONDS", default=15)
 
 # --- Observability ----------------------------------------------------------
 METRICS_BACKEND = env("METRICS_BACKEND", default="apps.common.metrics.LoggingMetrics")

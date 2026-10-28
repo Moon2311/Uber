@@ -35,12 +35,43 @@ services:
       timeout: 3s
       retries: 10
 
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      # containers use kafka:9092; the host (tests, local runserver) uses localhost:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:${KAFKA_HOST_PORT:-9094}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created explicitly (manage.py ensure_kafka_topics) with their
+      # own partitions/retention; typos must not silently create topics.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports:
+      - "127.0.0.1:${KAFKA_HOST_PORT:-9094}:9094"
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 15s
+
   backend:
     build: ./backend
     env_file: .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
       REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     ports:
       - "8000:8000"
     depends_on:
@@ -48,6 +79,42 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # Deliberately NOT kafka: the API must start and serve without Kafka
+      # (events wait in the PostgreSQL outbox).
+
+  # Publishes committed outbox rows to Kafka (single active instance via a
+  # PostgreSQL advisory lock; extra replicas idle as hot standbys).
+  outbox-relay:
+    build: ./backend
+    env_file: .env
+    command: ["sh", "-c", "python manage.py ensure_kafka_topics --wait 60 && python manage.py run_outbox_relay"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      backend:
+        condition: service_started  # runs migrations
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Example downstream consumer (analytics read models).
+  consumer-analytics:
+    build: ./backend
+    env_file: .env
+    command: ["sh", "-c", "python manage.py ensure_kafka_topics --wait 60 && python manage.py run_event_consumer analytics"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      backend:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:
+  kafkadata:

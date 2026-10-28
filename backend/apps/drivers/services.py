@@ -12,6 +12,7 @@ from apps.common.metrics import metrics
 from apps.locations.service import Freshness, get_location_service
 
 from .models import AvailabilityStatus, DriverProfile, Vehicle
+from .signals import driver_availability_changed
 
 logger = logging.getLogger("apps.drivers")
 
@@ -40,6 +41,7 @@ def _active_category(driver_id: int) -> str | None:
 
 def _apply_status(driver: DriverProfile, target: str, *, reason: str) -> None:
     """Caller holds the driver row lock (select_for_update)."""
+    previous = driver.availability_status
     driver.availability_status = target
     driver.availability_changed_at = timezone.now()
     driver.save(update_fields=["availability_status", "availability_changed_at", "updated_at"])
@@ -48,10 +50,19 @@ def _apply_status(driver: DriverProfile, target: str, *, reason: str) -> None:
     # and its H3 cell membership atomically (privacy; a fresh fix is required after
     # coming back online). If the mirror write fails (Redis down) the failover store
     # degrades to PostgreSQL and the change is re-pushed on recovery.
+    category = _active_category(driver.pk)
     get_location_service().set_driver_availability(
-        driver.pk,
-        online=target == AvailabilityStatus.ONLINE,
-        category=_active_category(driver.pk),
+        driver.pk, online=target == AvailabilityStatus.ONLINE, category=category
+    )
+    # Inside the caller's transaction: receivers write the outbox atomically.
+    driver_availability_changed.send(
+        sender=DriverProfile,
+        driver_id=driver.pk,
+        status=target,
+        previous_status=previous,
+        reason=reason,
+        vehicle_category=category,
+        changed_at=driver.availability_changed_at,
     )
     metrics().increment("driver.availability.changed", tags={"to": target, "reason": reason})
     logger.info(

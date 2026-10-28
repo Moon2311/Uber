@@ -38,6 +38,7 @@ from apps.geoindex.service import GeoSearchService, get_geo_search_service
 
 from .failover import FailoverLocationStore
 from .models import DriverLocationEvent
+from .signals import driver_location_applied
 from .stores import (
     BoundingBox,
     HistoryPoint,
@@ -135,6 +136,7 @@ class LocationService:
             history = self._maybe_record_history(result.current)
 
         self._observe(driver.pk, UpdateOutcome.APPLIED.value, history_recorded=history)
+        driver_location_applied.send(sender=LocationService, fix=result.current)
         return UpdateResult(UpdateOutcome.APPLIED, result.current, history_recorded=history)
 
     def set_driver_availability(self, driver_id: int, *, online: bool, category: str | None):
