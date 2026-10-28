@@ -16,6 +16,7 @@ been built yet** (see *Status*).
 | 6 | DISCO-style matching: batch + k-ring H3 search, driver state store, ETA provider (labeled fallback), ranking, atomic reservations/offers, leases, idempotency, concurrency-tested | Done & tested — see [docs/matching-engine.md](docs/matching-engine.md) |
 | 7 | Real-time WebSockets (Channels + Daphne + Redis channel layer): authenticated sockets, authorized trip channels, offers + backend-validated accept/decline, live location & milestones, heartbeats/reconnect/stale cleanup | Done & tested — see [docs/realtime.md](docs/realtime.md) |
 | 8 | Trip service & database architecture: centralized actor-aware state machine, compare-and-set `state_version`, append-only audit log, driver release/re-search, payment status decoupled, data-ownership + partial-failure model, `reconcile_trips`, Cassandra evaluated (not introduced) | Done & tested — see [docs/trip-service.md](docs/trip-service.md) |
+| 9 | Pricing (versioned rules, upfront quotes, illustrative surge), payments (provider abstraction + sandbox, idempotent attempts, signed webhooks, reconciliation of ambiguous outcomes), fraud (Kafka monitoring vs blocking checks), push notifications (retries, delivery tracking) | Done & tested — see [docs/pricing-payments.md](docs/pricing-payments.md) |
 
 ## Quick start
 
@@ -56,6 +57,9 @@ API docs: Swagger UI at http://localhost:8000/api/docs/; the OpenAPI schema is a
 | `make match` | Run the matching worker on the host |
 | `make ws` | Run a WebSocket (ASGI) server on the host at :8001 |
 | `make reconcile-trips` | Check trips against audit log / matching / payments / outbox (`--fix` repairs safe cases; exit 1 if anything is left) |
+| `make surge` / `make payments` / `make notify` | Run the surge updater / payments worker / notification worker on the host |
+| `make consume-fraud` / `make consume-notifications` | Run the fraud / notification consumer groups |
+| `make payments-status` | Payment states, open (ambiguous) attempts, payments needing review (exit 1 if any) |
 | `make events-status` | Outbox backlog, Kafka reachability, consumer lag and heartbeats |
 | `make prune-events` | Delete old published outbox rows and dedupe records (schedule daily) |
 | `make schema` | Export OpenAPI to `docs/openapi.yml` |
@@ -71,8 +75,8 @@ API docs: Swagger UI at http://localhost:8000/api/docs/; the OpenAPI schema is a
 | GET | `/api/v1/drivers/nearby/?lat=&lng=&radius_km=&category=` | rider |
 | POST | `/api/v1/locations/update/` | driver |
 | GET | `/api/v1/locations/me/` | driver |
-| POST | `/api/v1/pricing/estimate/` | rider |
-| POST | `/api/v1/trips/` | rider (optional `Idempotency-Key` header) |
+| POST | `/api/v1/pricing/estimate/` | rider: returns an upfront quote (`quote_id`, breakdown, surge, pricing version) |
+| POST | `/api/v1/trips/` | rider (optional `Idempotency-Key` header, `quote_id`, `payment_method_id`) |
 | GET | `/api/v1/trips/{id}/` · `/api/v1/trips/history/` | owner (rider or assigned driver) |
 | POST | `/api/v1/trips/{id}/cancel/` | owning rider (idempotent; optional `expected_version`) |
 | GET | `/api/v1/matching/offers/` | driver (own pending offers) |
@@ -81,6 +85,11 @@ API docs: Swagger UI at http://localhost:8000/api/docs/; the OpenAPI schema is a
 | POST | `/api/v1/trips/{id}/release/` | assigned driver, before pickup: trip returns to matching |
 | GET | `/api/v1/trips/{id}/events/` | staff (full audit trail) |
 | WS | `/ws/v1/` (subprotocols `["jwt", <access token>]`) | riders & drivers — see [docs/realtime.md](docs/realtime.md) |
+| GET/POST | `/api/v1/payments/methods/` · DELETE `/methods/{id}/` | rider (provider tokens only, never card numbers) |
+| GET | `/api/v1/payments/trips/{trip_id}/` | owning rider / staff |
+| POST | `/api/v1/payments/{id}/retry/` · `/refund/` | owning rider (failed payment) · staff |
+| POST | `/api/v1/payments/webhooks/{provider}/` | payment provider (HMAC-signed) |
+| GET | `/api/v1/notifications/` · POST `/notifications/devices/` | authenticated |
 | GET | `/api/v1/health/` | anyone |
 | GET | `/api/v1/health/events/` | staff (consumer lag per partition) |
 
@@ -130,6 +139,13 @@ Errors always use this shape: `{"error": {"code", "message", "details"}}`.
   after COMMIT and carry state re-read from PostgreSQL. A WebSocket accept runs
   the same transactional code as HTTP. WebSockets (UI, ephemeral) and Kafka
   (services, durable) are independent paths (see [docs/realtime.md](docs/realtime.md)).
+- **Money is reconciled, not assumed.** Every charge or refund is an attempt with
+  an idempotency key, committed before the provider call. Timeouts stay
+  ambiguous until reconciliation asks the provider. Webhooks are HMAC-verified
+  on the raw body and deduplicated. Surge is an **illustrative policy** that
+  must be checked against local law. Fraud monitoring (Kafka) never blocks by
+  itself; blocking checks need corroborated reliable signals, so GPS alone
+  never blocks (see [docs/pricing-payments.md](docs/pricing-payments.md)).
 - **Cassandra: evaluated, not introduced.** At current and projected volumes,
   PostgreSQL (with partitioning and replicas next) serves every trip-history
   query. Cassandra could only be an outbox-fed projection, so it would add

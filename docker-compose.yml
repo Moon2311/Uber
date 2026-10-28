@@ -157,6 +157,86 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Recomputes surge zones (ILLUSTRATIVE policy; see docs/pricing-payments.md).
+  surge-updater:
+    build: ./backend
+    env_file: .env
+    command: ["python", "manage.py", "update_surge"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Charges completed card trips and reconciles ambiguous provider outcomes.
+  payments-worker:
+    build: ./backend
+    env_file: .env
+    command: ["python", "manage.py", "run_payments_worker"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Delivers push notifications with retries.
+  notification-worker:
+    build: ./backend
+    env_file: .env
+    command: ["python", "manage.py", "run_notification_worker"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Asynchronous fraud monitoring (risk signals and review cases).
+  consumer-fraud:
+    build: ./backend
+    env_file: .env
+    command: ["sh", "-c", "python manage.py ensure_kafka_topics --wait 60 && python manage.py run_event_consumer fraud"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      backend:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Turns trip / payment events into notifications.
+  consumer-notifications:
+    build: ./backend
+    env_file: .env
+    command: ["sh", "-c", "python manage.py ensure_kafka_topics --wait 60 && python manage.py run_event_consumer notifications"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      backend:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:
   kafkadata:

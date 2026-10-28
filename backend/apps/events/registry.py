@@ -1,7 +1,7 @@
 """Consumer groups run by `manage.py run_event_consumer <group>`.
 
-Note what is *not* here: no group subscribes to driver.location.v1 by default.
-High-frequency position data is opt-in per consumer (e.g. a future heat-map job).
+High-frequency position data is opt-in per consumer: only `fraud` subscribes to
+the sampled driver.location.v1 stream (speed plausibility).
 """
 
 from django.utils.module_loading import import_string
@@ -12,6 +12,15 @@ CONSUMER_GROUPS = {
     "analytics": {
         "handlers": "apps.analytics.handlers.HANDLERS",
         "topics": [topics.TRIP_EVENTS, topics.DRIVER_AVAILABILITY],
+    },
+    # Asynchronous fraud monitoring; the only default subscriber to sampled GPS.
+    "fraud": {
+        "handlers": "apps.fraud.handlers.HANDLERS",
+        "topics": [topics.TRIP_EVENTS, topics.PAYMENT_EVENTS, topics.DRIVER_LOCATION],
+    },
+    "notifications": {
+        "handlers": "apps.notifications.services.HANDLERS",
+        "topics": [topics.TRIP_EVENTS, topics.PAYMENT_EVENTS],
     },
 }
 

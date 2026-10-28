@@ -31,6 +31,10 @@ SAMPLES = {
     "RideAccepted": {"trip_id": TRIP, "offer_id": uuid.uuid4(), "driver_id": 7, "accepted_at": NOW},
     "TripStatusChanged": {"trip_id": TRIP, "from_status": "REQUESTED", "to_status": "CANCELLED",
                           "rider_id": 3, "driver_id": None, "changed_at": NOW},
+    "PaymentStatusChanged": {"payment_id": uuid.uuid4(), "trip_id": TRIP, "rider_id": 3,
+                             "from_status": "PROCESSING", "to_status": "PAID",
+                             "amount": Decimal("12.50"), "currency": "USD", "method": "CARD",
+                             "failure_code": None, "changed_at": NOW},
     "TripCompleted": {"trip_id": TRIP, "rider_id": 3, "driver_id": 7, "ride_category": "ECONOMY",
                       "estimated_fare": Decimal("12.50"), "final_fare": None, "currency": "USD",
                       "estimated_distance_km": Decimal("4.2"), "started_at": NOW,
@@ -63,6 +67,7 @@ def test_roundtrip(event_type):
         ("RideOfferClosed", "trip_id", topics.TRIP_EVENTS),
         ("TripStatusChanged", "trip_id", topics.TRIP_EVENTS),
         ("TripCompleted", "trip_id", topics.TRIP_EVENTS),
+        ("PaymentStatusChanged", "trip_id", topics.PAYMENT_EVENTS),
     ],
 )
 def test_keys_and_topics(event_type, key_field, topic):

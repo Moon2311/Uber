@@ -123,6 +123,67 @@
       "reason"
     ]
   },
+  "PaymentStatusChanged.v1": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "PaymentStatusChanged v1",
+    "description": "Payment state change. Never settle or refund from this event; the payments service is authoritative.",
+    "type": "object",
+    "properties": {
+      "payment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "trip_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "rider_id": {
+        "type": "integer"
+      },
+      "from_status": {
+        "type": "string"
+      },
+      "to_status": {
+        "type": "string"
+      },
+      "amount": {
+        "type": "string",
+        "pattern": "^-?\\d+(\\.\\d+)?$"
+      },
+      "currency": {
+        "type": "string"
+      },
+      "method": {
+        "type": "string"
+      },
+      "failure_code": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "changed_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "required": [
+      "payment_id",
+      "trip_id",
+      "rider_id",
+      "from_status",
+      "to_status",
+      "amount",
+      "currency",
+      "method",
+      "failure_code",
+      "changed_at"
+    ]
+  },
   "RideAccepted.v1": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "RideAccepted v1",

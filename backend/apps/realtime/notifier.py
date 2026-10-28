@@ -25,6 +25,7 @@ from apps.common.geo import haversine_km
 from apps.common.metrics import metrics
 from apps.locations.signals import driver_location_applied
 from apps.matching.signals import ride_offer_accepted, ride_offer_closed, ride_offer_created
+from apps.payments.signals import payment_status_changed
 from apps.trips.signals import trip_requested, trip_status_changed
 
 from . import presence
@@ -145,6 +146,16 @@ def _fresh_snapshot(trip_id) -> dict | None:
 
     trip = Trip.objects.select_related("rider", "driver__user").filter(pk=trip_id).first()
     return trip_snapshot(trip) if trip else None
+
+
+# --- payments -> the rider's own connections (live in-app status) -------------------------
+@receiver(payment_status_changed, dispatch_uid="realtime.payment_status")
+def on_payment_status_changed(sender, payment, from_status, to_status, **kw):
+    data = {"payment_id": str(payment.pk), "trip_id": str(payment.trip_id), "status": to_status,
+            "amount": str(payment.amount), "currency": payment.currency,
+            "failure_code": payment.failure_code or None}  # fmt: skip
+    rider_id = payment.rider_id
+    after_commit(lambda: send(user_group(rider_id), "payment.status", data))
 
 
 # --- driver GPS -> riders of that driver's active trip --------------------------------

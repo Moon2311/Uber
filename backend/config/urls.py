@@ -8,6 +8,8 @@ api_v1 = [
     path("locations/", include("apps.locations.urls")),
     path("trips/", include("apps.trips.urls")),
     path("pricing/", include("apps.pricing.urls")),
+    path("payments/", include("apps.payments.urls")),
+    path("notifications/", include("apps.notifications.urls")),
     path("matching/", include("apps.matching.urls")),
     path("", include("apps.common.urls")),
 ]

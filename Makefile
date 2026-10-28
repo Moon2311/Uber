@@ -1,6 +1,6 @@
 PY := backend/.venv/bin/python
 
-.PHONY: db up down migrate run test lint format expire-stale prune-history reindex-locations reconcile-live rebuild-live prune-live topics relay consume events-status prune-events match ws ws-cleanup reconcile-trips schema
+.PHONY: db up down migrate run test lint format expire-stale prune-history reindex-locations reconcile-live rebuild-live prune-live topics relay consume events-status prune-events match ws ws-cleanup reconcile-trips surge payments notify consume-fraud consume-notifications payments-status schema
 
 db:            ## start PostgreSQL + Redis + Kafka
 	docker compose up -d db redis kafka
@@ -48,5 +48,17 @@ ws-cleanup:    ## drop presence entries of dead WebSocket connections (every min
 	cd backend && ../$(PY) manage.py cleanup_realtime_presence
 reconcile-trips: ## check trips vs audit/matching/payments/outbox (add ARGS=--fix to repair)
 	cd backend && ../$(PY) manage.py reconcile_trips $(ARGS)
+surge:         ## recompute surge zones (long-lived; --once via ARGS)
+	cd backend && ../$(PY) manage.py update_surge $(ARGS)
+payments:      ## charge completed card trips + reconcile ambiguous outcomes (long-lived)
+	cd backend && ../$(PY) manage.py run_payments_worker
+notify:        ## deliver push notifications with retries (long-lived)
+	cd backend && ../$(PY) manage.py run_notification_worker
+consume-fraud: ## fraud monitoring consumer group (long-lived)
+	cd backend && ../$(PY) manage.py run_event_consumer fraud
+consume-notifications: ## notification consumer group (long-lived)
+	cd backend && ../$(PY) manage.py run_event_consumer notifications
+payments-status: ## payment states, open attempts, payments needing review (exit 1 if any)
+	cd backend && ../$(PY) manage.py payments_status
 schema:
 	cd backend && ../$(PY) manage.py spectacular --file ../docs/openapi.yml

@@ -64,7 +64,7 @@ def test_outbox_failure_rolls_back_the_cancellation(monkeypatch):
 def test_payment_failure_means_the_trip_was_never_created(monkeypatch):
     rider = make_rider()
 
-    def broken(*, trip):
+    def broken(*, trip, **kw):
         raise RuntimeError("payments table unavailable")
 
     monkeypatch.setattr(payment_services, "create_pending_payment", broken)

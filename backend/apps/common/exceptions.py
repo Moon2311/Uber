@@ -37,6 +37,14 @@ def _error_body(code: str, message: str, details=None) -> dict:
 def api_exception_handler(exc, context):
     from apps.locations.stores import StoreUnavailable
 
+    # A denial that must be audited even though its transaction rolled back
+    # (e.g. fraud BLOCK decisions). Runs here, after the atomic blocks exited.
+    if callable(record := getattr(exc, "record_after_rollback", None)):
+        try:
+            record()
+        except Exception:  # noqa: BLE001 - auditing must not turn a 403 into a 500
+            logger.exception("Could not record rejected action")
+
     if isinstance(exc, StoreUnavailable):
         # Only reached when no fallback is configured (LOCATION_STORE_FALLBACK=none).
         logger.error("Live store unavailable: %s", exc)

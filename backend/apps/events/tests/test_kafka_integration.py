@@ -59,7 +59,7 @@ def create_and_cancel(client):
 def test_outbox_to_kafka_to_consumer_end_to_end(rider_client):
     trip_id = create_and_cancel(rider_client)
     result = OutboxRelay(get_publisher()).run_once()
-    assert result.published == 2
+    assert result.published == 3  # + PaymentStatusChanged (PENDING -> CANCELLED)
     assert set(OutboxEvent.objects.values_list("status", flat=True)) == {OutboxStatus.PUBLISHED}
 
     msgs = read_all(TRIP_EVENTS, expect=2)
@@ -80,7 +80,7 @@ def test_duplicate_publication_is_absorbed_by_consumer(rider_client):
     relay.run_once()
     # Relay crashed before marking rows -> publishes the same events again.
     OutboxEvent.objects.update(status=OutboxStatus.PENDING, published_at=None)
-    assert relay.run_once().published == 2
+    assert relay.run_once().published == 3
     assert len(read_all(TRIP_EVENTS, expect=4)) == 4  # Kafka really holds duplicates
 
     run_analytics(max_messages=4)
@@ -115,7 +115,7 @@ def test_outbox_recovers_after_kafka_outage(rider_client, settings):
     row = OutboxEvent.objects.order_by("id").first()
     assert row.status == OutboxStatus.PENDING and row.attempts == 1 and row.last_error
 
-    assert OutboxRelay(get_publisher()).run_once().published == 2  # broker back
+    assert OutboxRelay(get_publisher()).run_once().published == 3  # broker back
     assert len(read_all(TRIP_EVENTS, expect=2)) == 2
 
 

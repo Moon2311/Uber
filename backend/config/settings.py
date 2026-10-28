@@ -54,6 +54,8 @@ INSTALLED_APPS = [
     "apps.analytics",
     "apps.matching",
     "apps.realtime",
+    "apps.fraud",
+    "apps.notifications",
 ]
 
 MIDDLEWARE = [
@@ -151,6 +153,7 @@ REST_FRAMEWORK = {
         "auth": env("THROTTLE_AUTH", default="10/min"),
         "location_update": env("THROTTLE_LOCATION_UPDATE", default="120/min"),
         "trip_create": env("THROTTLE_TRIP_CREATE", default="10/min"),
+        "fare_estimate": env("THROTTLE_FARE_ESTIMATE", default="30/min"),
     },
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
 }
@@ -179,6 +182,9 @@ SPECTACULAR_SETTINGS = {
     "ENUM_NAME_OVERRIDES": {
         "RideCategoryEnum": "apps.drivers.models.RideCategory",
         "ActorTypeEnum": "apps.trips.models.ActorType",
+        "TripStatusEnum": "apps.trips.models.TripStatus",
+        "PaymentStatusEnum": "apps.payments.models.PaymentStatus",
+        "NotificationStatusEnum": "apps.notifications.models.NotificationStatus",
     },
 }
 
@@ -315,6 +321,75 @@ ETA_TIMEOUT_SECONDS = env.float("ETA_TIMEOUT_SECONDS", default=1.5)
 ETA_FALLBACK_ROAD_FACTOR = 1.4
 ETA_FALLBACK_SPEED_KMH = 22.0
 ETA_FALLBACK_OVERHEAD_S = 60
+
+# --- Pricing (Step 9) ---------------------------------------------------------
+# Rules are versioned rows (manage.py pricing_rules); these bound every version.
+# SURGE IS AN ILLUSTRATIVE POLICY: check local law (price caps, emergency pricing,
+# disclosure) before enabling it for real riders. See docs/pricing-payments.md.
+PRICING_QUOTE_TTL_SECONDS = env.int("PRICING_QUOTE_TTL_SECONDS", default=300)
+PRICING_SURGE_ENABLED = env.bool("PRICING_SURGE_ENABLED", default=True)  # global kill switch
+PRICING_SURGE_HARD_CAP = env.float("PRICING_SURGE_HARD_CAP", default=3.0)
+PRICING_SURGE_DISABLED_ZONES = env.list("PRICING_SURGE_DISABLED_ZONES", default=[])
+PRICING_SURGE_H3_RESOLUTION = env.int("PRICING_SURGE_H3_RESOLUTION", default=7)  # ~5 km2 zones
+PRICING_SURGE_INTERVAL_SECONDS = env.float("PRICING_SURGE_INTERVAL_SECONDS", default=30)
+
+# --- Payments -------------------------------------------------------------------
+PAYMENTS_PROVIDER = env("PAYMENTS_PROVIDER", default="sandbox")
+PAYMENTS_SANDBOX_ALLOWED = env.bool("PAYMENTS_SANDBOX_ALLOWED", default=DEBUG)
+# Comma-separated; the first signs (sandbox), all verify (rotation). Never logged.
+PAYMENTS_WEBHOOK_SECRETS = env.list("PAYMENTS_WEBHOOK_SECRETS", default=[])
+PAYMENTS_WEBHOOK_TOLERANCE_SECONDS = env.int("PAYMENTS_WEBHOOK_TOLERANCE_SECONDS", default=300)
+PAYMENTS_MAX_CHARGE_ATTEMPTS = env.int("PAYMENTS_MAX_CHARGE_ATTEMPTS", default=5)
+PAYMENTS_SUBMITTED_GRACE_SECONDS = env.int("PAYMENTS_SUBMITTED_GRACE_SECONDS", default=60)
+PAYMENTS_PENDING_CHECK_SECONDS = env.int("PAYMENTS_PENDING_CHECK_SECONDS", default=300)
+PAYMENTS_UNAVAILABLE_RETRY_SECONDS = env.int("PAYMENTS_UNAVAILABLE_RETRY_SECONDS", default=60)
+PAYMENTS_RECONCILE_BASE_SECONDS = env.float("PAYMENTS_RECONCILE_BASE_SECONDS", default=30)
+PAYMENTS_RECONCILE_MAX_SECONDS = env.float("PAYMENTS_RECONCILE_MAX_SECONDS", default=1800)
+PAYMENTS_MAX_RECONCILE_CHECKS = env.int("PAYMENTS_MAX_RECONCILE_CHECKS", default=12)
+PAYMENTS_WORKER_BATCH = env.int("PAYMENTS_WORKER_BATCH", default=20)
+PAYMENTS_WORKER_POLL_SECONDS = env.float("PAYMENTS_WORKER_POLL_SECONDS", default=1.0)
+
+# --- Blocking pre-action checks (apps.common.guards) ----------------------------------
+ACTION_GUARDS = {
+    "trip_request": ["apps.payments.guards.no_outstanding_balance", "apps.fraud.guards.check"],
+    "add_payment_method": ["apps.fraud.guards.check"],
+}
+
+# --- Fraud ------------------------------------------------------------------------
+# weight = risk points per occurrence; reliability LOW never counts towards a block.
+FRAUD_RULES = {
+    "gps_impossible_speed": {"weight": 10, "reliability": "LOW", "ttl_hours": 24,
+                             "max_kmh": 250, "min_km": 1.0},
+    "implausible_trip_speed": {"weight": 25, "reliability": "MEDIUM", "ttl_hours": 72,
+                               "max_avg_kmh": 130, "min_km": 2.0},
+    "rider_rapid_cancellations": {"weight": 15, "reliability": "MEDIUM", "ttl_hours": 24,
+                                  "threshold": 4, "window_hours": 1},
+    "repeated_rider_driver_pair": {"weight": 20, "reliability": "MEDIUM", "ttl_hours": 168,
+                                   "threshold": 4, "window_hours": 24},
+    "payment_failed": {"weight": 15, "reliability": "HIGH", "ttl_hours": 72},
+    "repeated_payment_failures": {"weight": 30, "reliability": "HIGH", "ttl_hours": 72,
+                                  "threshold": 3, "window_hours": 24},
+    "card_testing": {"threshold": 5, "window_hours": 1},  # synchronous hard limit
+}  # fmt: skip
+FRAUD_POLICY = {
+    "review_score": 40,
+    "block_score": 70,
+    "min_distinct_reliable_signals": 2,
+    "max_points_per_signal": 30,
+    # If the check itself fails: allow (True) or refuse (False) the action.
+    "fail_open": {"trip_request": True, "add_payment_method": False},
+}
+# Not the rider's doing: never a fraud signal.
+FRAUD_IGNORED_FAILURE_CODES = ["provider_unavailable", "no_payment_method", "invalid_request"]
+
+# --- Notifications ------------------------------------------------------------------------
+NOTIFICATIONS_PROVIDER = env("NOTIFICATIONS_PROVIDER", default="sandbox")
+NOTIFICATIONS_MAX_ATTEMPTS = env.int("NOTIFICATIONS_MAX_ATTEMPTS", default=5)
+NOTIFICATIONS_RETRY_BASE_SECONDS = env.float("NOTIFICATIONS_RETRY_BASE_SECONDS", default=5)
+NOTIFICATIONS_RETRY_MAX_SECONDS = env.float("NOTIFICATIONS_RETRY_MAX_SECONDS", default=300)
+NOTIFICATIONS_LEASE_SECONDS = env.int("NOTIFICATIONS_LEASE_SECONDS", default=60)
+NOTIFICATIONS_WORKER_BATCH = env.int("NOTIFICATIONS_WORKER_BATCH", default=50)
+NOTIFICATIONS_WORKER_POLL_SECONDS = env.float("NOTIFICATIONS_WORKER_POLL_SECONDS", default=1.0)
 
 # --- Real-time WebSockets (see docs/realtime.md) -----------------------------
 # "redis" (required with more than one WebSocket instance) or "memory" (tests, one process).

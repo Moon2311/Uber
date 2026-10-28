@@ -11,6 +11,7 @@ from django.dispatch import receiver
 from apps.drivers.signals import driver_availability_changed
 from apps.locations.signals import driver_location_applied
 from apps.matching.signals import ride_offer_accepted, ride_offer_closed, ride_offer_created
+from apps.payments.signals import payment_status_changed
 from apps.trips.signals import trip_requested, trip_status_changed
 
 from . import builders, outbox
@@ -87,3 +88,8 @@ def on_offer_closed(sender, offer, **kw):
             closed_at=offer.responded_at,
         )  # fmt: skip
     )
+
+
+@receiver(payment_status_changed, dispatch_uid="events.payment_status")
+def on_payment_status_changed(sender, payment, from_status, to_status, **kw):
+    outbox.enqueue(builders.payment_status_changed(payment, from_status, to_status))
