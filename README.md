@@ -13,13 +13,17 @@ been built yet** (see *Status*).
 | 3 | H3 indexing: cell per latest location, bounded ring expansion, bbox fallback retained | Done & tested — see [docs/h3-geo-indexing.md](docs/h3-geo-indexing.md) |
 | 4 | Redis hot store: live locations, availability mirror, H3 cell sets, Lua atomicity, TTLs, failover to PostgreSQL, reconcile/rebuild | Done & tested — see [docs/redis-hot-store.md](docs/redis-hot-store.md) |
 | 5 | Kafka event streaming: versioned schemas, transactional outbox + relay, idempotent consumers, retries + DLQ, lag/health monitoring, sampled GPS stream | Done & tested — see [docs/event-streaming.md](docs/event-streaming.md) |
+| 6 | DISCO-style matching: batch + k-ring H3 search, driver state store, ETA provider (labeled fallback), ranking, atomic reservations/offers, leases, idempotency, concurrency-tested | Done & tested — see [docs/matching-engine.md](docs/matching-engine.md) |
+| 7 | Real-time WebSockets (Channels + Daphne + Redis channel layer): authenticated sockets, authorized trip channels, offers + backend-validated accept/decline, live location & milestones, heartbeats/reconnect/stale cleanup | Done & tested — see [docs/realtime.md](docs/realtime.md) |
+| 8 | Trip service & database architecture: centralized actor-aware state machine, compare-and-set `state_version`, append-only audit log, driver release/re-search, payment status decoupled, data-ownership + partial-failure model, `reconcile_trips`, Cassandra evaluated (not introduced) | Done & tested — see [docs/trip-service.md](docs/trip-service.md) |
 
 ## Quick start
 
 ```bash
 cp .env.example .env            # then set POSTGRES_PASSWORD / DJANGO_SECRET_KEY / DATABASE_URL
 docker compose up -d --build    # PostgreSQL :5433, Redis :6380, Kafka :9094, API :8000,
-                                # + outbox-relay and consumer-analytics workers
+                                # + outbox-relay, consumer-analytics, matching-worker,
+                                # WebSockets on :8001 and :8002 (ws://localhost:8001/ws/v1/)
 curl localhost:8000/api/v1/health/
 ```
 
@@ -49,6 +53,9 @@ API docs: Swagger UI at http://localhost:8000/api/docs/; the OpenAPI schema is a
 | `make prune-live` | Drop expired drivers from Redis indexes (schedule every minute) |
 | `make rebuild-live` | Full rebuild of the Redis live index from PostgreSQL |
 | `make relay` / `make consume` | Run the outbox relay / analytics consumer on the host |
+| `make match` | Run the matching worker on the host |
+| `make ws` | Run a WebSocket (ASGI) server on the host at :8001 |
+| `make reconcile-trips` | Check trips against audit log / matching / payments / outbox (`--fix` repairs safe cases; exit 1 if anything is left) |
 | `make events-status` | Outbox backlog, Kafka reachability, consumer lag and heartbeats |
 | `make prune-events` | Delete old published outbox rows and dedupe records (schedule daily) |
 | `make schema` | Export OpenAPI to `docs/openapi.yml` |
@@ -65,9 +72,15 @@ API docs: Swagger UI at http://localhost:8000/api/docs/; the OpenAPI schema is a
 | POST | `/api/v1/locations/update/` | driver |
 | GET | `/api/v1/locations/me/` | driver |
 | POST | `/api/v1/pricing/estimate/` | rider |
-| POST | `/api/v1/trips/` | rider |
+| POST | `/api/v1/trips/` | rider (optional `Idempotency-Key` header) |
 | GET | `/api/v1/trips/{id}/` · `/api/v1/trips/history/` | owner (rider or assigned driver) |
-| POST | `/api/v1/trips/{id}/cancel/` | owning rider |
+| POST | `/api/v1/trips/{id}/cancel/` | owning rider (idempotent; optional `expected_version`) |
+| GET | `/api/v1/matching/offers/` | driver (own pending offers) |
+| POST | `/api/v1/matching/offers/{id}/accept/` · `/decline/` | owning driver (idempotent) |
+| POST | `/api/v1/trips/{id}/arrive/` · `/start/` · `/complete/` | assigned driver (idempotent; optional `expected_version`) |
+| POST | `/api/v1/trips/{id}/release/` | assigned driver, before pickup: trip returns to matching |
+| GET | `/api/v1/trips/{id}/events/` | staff (full audit trail) |
+| WS | `/ws/v1/` (subprotocols `["jwt", <access token>]`) | riders & drivers — see [docs/realtime.md](docs/realtime.md) |
 | GET | `/api/v1/health/` | anyone |
 | GET | `/api/v1/health/events/` | staff (consumer lag per partition) |
 
@@ -87,7 +100,11 @@ Errors always use this shape: `{"error": {"code", "message", "details"}}`.
   and statuses. Partial unique indexes enforce one active trip per rider and per
   driver, and one active vehicle per driver. Money uses `Decimal`, and all
   timestamps are timezone-aware.
-- **Explicit trip state machine** in `trips/state_machine.py`.
+- **Explicit trip state machine** in `trips/state_machine.py`. One table lists
+  every legal edge and the actors allowed to take it. Writes are compare-and-set
+  on `state_version`, and every change appends to an audit log in the same
+  transaction. Payment status is a separate state machine that follows trip
+  signals (see [docs/trip-service.md](docs/trip-service.md)).
 - **Location storage behind `LocationStore`**, so Redis can be added without
   changing callers. See [docs/location-service.md](docs/location-service.md).
 - **H3 is isolated in `apps/geoindex`.** Candidate search depends on cells and
@@ -104,4 +121,18 @@ Errors always use this shape: `{"error": {"code", "message", "details"}}`.
   order. Consumers are idempotent through a processed-event ledger and
   dead-letter permanent failures. GPS is sampled (cell change or 15 s) to a
   1-hour topic. See [docs/event-streaming.md](docs/event-streaming.md).
-- **Not yet introduced, on purpose:** Channels, Cassandra.
+- **Matching keeps its components separate**: discovery (H3/Redis), driver
+  state, ETA, ranking, reservation and orchestration. PostgreSQL row locks
+  (fixed order Trip → Job → Driver → Offer) and unique constraints guarantee
+  that no driver gets conflicting trips. Redis locks are an advisory fast path
+  and Kafka is not involved (see [docs/matching-engine.md](docs/matching-engine.md)).
+- **WebSockets are a delivery layer, not a source of truth.** Pushes are sent
+  after COMMIT and carry state re-read from PostgreSQL. A WebSocket accept runs
+  the same transactional code as HTTP. WebSockets (UI, ephemeral) and Kafka
+  (services, durable) are independent paths (see [docs/realtime.md](docs/realtime.md)).
+- **Cassandra: evaluated, not introduced.** At current and projected volumes,
+  PostgreSQL (with partitioning and replicas next) serves every trip-history
+  query. Cassandra could only be an outbox-fed projection, so it would add
+  operations work without serving any new query. The trigger thresholds, a
+  query-first CQL schema, the migration plan and reconciliation are in
+  [docs/trip-service.md §7](docs/trip-service.md#7-cassandra-evaluation).

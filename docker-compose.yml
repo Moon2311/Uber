@@ -99,6 +99,48 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # WebSocket servers (ASGI / Daphne). Two instances share state only through the
+  # Redis channel layer, demonstrating horizontal scaling of real-time delivery.
+  realtime-1: &realtime
+    build: ./backend
+    env_file: .env
+    command: ["daphne", "-b", "0.0.0.0", "-p", "8001", "--ping-interval", "20", "--ping-timeout", "30", "config.asgi:application"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      CHANNEL_LAYER_BACKEND: redis
+    ports:
+      - "8001:8001"
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  realtime-2:
+    <<: *realtime
+    command: ["daphne", "-b", "0.0.0.0", "-p", "8002", "--ping-interval", "20", "--ping-timeout", "30", "config.asgi:application"]
+    ports:
+      - "8002:8002"
+
+  # Matching engine worker (safe to scale: SKIP LOCKED + leases + DB constraints).
+  matching-worker:
+    build: ./backend
+    env_file: .env
+    command: ["python", "manage.py", "run_matching_worker"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      backend:
+        condition: service_started  # runs migrations
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   # Example downstream consumer (analytics read models).
   consumer-analytics:
     build: ./backend

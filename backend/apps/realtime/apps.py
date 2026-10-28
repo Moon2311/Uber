@@ -1,0 +1,10 @@
+from django.apps import AppConfig
+
+
+class RealtimeConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "apps.realtime"
+    label = "realtime"
+
+    def ready(self):
+        from . import notifier  # noqa: F401  (connects signal receivers)

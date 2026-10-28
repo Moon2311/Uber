@@ -5,3 +5,6 @@ class PaymentsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "apps.payments"
     label = "payments"
+
+    def ready(self):
+        from . import receivers  # noqa: F401

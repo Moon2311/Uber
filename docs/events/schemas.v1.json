@@ -152,6 +152,43 @@
       "accepted_at"
     ]
   },
+  "RideOfferClosed.v1": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "RideOfferClosed v1",
+    "description": "An offer ended without acceptance: rejection by the driver, expiry, or withdrawal (trip cancelled / driver offline).",
+    "type": "object",
+    "properties": {
+      "trip_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "offer_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "driver_id": {
+        "type": "integer"
+      },
+      "status": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      },
+      "closed_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "required": [
+      "trip_id",
+      "offer_id",
+      "driver_id",
+      "status",
+      "reason",
+      "closed_at"
+    ]
+  },
   "RideOfferCreated.v1": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "RideOfferCreated v1",
