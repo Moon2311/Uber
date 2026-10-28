@@ -5,11 +5,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import IsRider
+from apps.common.idempotency import idempotent_response
+from apps.common.permissions import IsDriver, IsRider
 
 from .models import Trip, TripStatus
 from .serializers import TripCancelSerializer, TripCreateSerializer, TripSerializer
-from .services import cancel_trip_by_rider, request_trip
+from .services import advance_trip_by_driver, cancel_trip_by_rider, request_trip
 
 
 def _trips_for(user):
@@ -20,12 +21,24 @@ class TripCreateView(APIView):
     permission_classes = [IsRider]
     throttle_scope = "trip_create"
 
-    @extend_schema(request=TripCreateSerializer, responses={201: TripSerializer})
+    @extend_schema(
+        request=TripCreateSerializer,
+        responses={201: TripSerializer},
+        parameters=[
+            OpenApiParameter(
+                "Idempotency-Key", str, location=OpenApiParameter.HEADER, required=False,
+                description="Retry-safe key: repeating the request returns the same trip.",
+            )
+        ],
+    )  # fmt: skip
     def post(self, request):
-        serializer = TripCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        trip = request_trip(rider=request.user, **serializer.validated_data)
-        return Response(TripSerializer(trip).data, status=status.HTTP_201_CREATED)
+        def run():
+            serializer = TripCreateSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            trip = request_trip(rider=request.user, **serializer.validated_data)
+            return Response(TripSerializer(trip).data, status=status.HTTP_201_CREATED)
+
+        return idempotent_response(request, "trip-create", run)
 
 
 class TripDetailView(generics.RetrieveAPIView):
@@ -67,6 +80,23 @@ class TripCancelView(APIView):
         try:
             trip = cancel_trip_by_rider(
                 trip_id=trip_id, rider=request.user, reason=serializer.validated_data["reason"]
+            )
+        except Trip.DoesNotExist as exc:
+            raise Http404 from exc
+        return Response(TripSerializer(trip).data)
+
+
+class TripMilestoneView(APIView):
+    """POST /trips/{id}/arrive|start|complete/ - assigned driver only."""
+
+    permission_classes = [IsDriver]
+    milestone = None
+
+    @extend_schema(request=None, responses=TripSerializer)
+    def post(self, request, trip_id):
+        try:
+            trip = advance_trip_by_driver(
+                trip_id=trip_id, driver=request.user.driver_profile, milestone=self.milestone
             )
         except Trip.DoesNotExist as exc:
             raise Http404 from exc

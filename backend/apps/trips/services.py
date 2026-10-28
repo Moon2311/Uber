@@ -59,3 +59,26 @@ def cancel_trip_by_rider(*, trip_id, rider: User, reason: str = "") -> Trip:
     state_machine.transition(trip, TripStatus.CANCELLED, cancellation_reason=reason)
     cancel_payment_for_trip(trip=trip)
     return trip
+
+
+# --- driver-side milestones (assigned driver only) ----------------------------------
+DRIVER_MILESTONES = {
+    "arrive": (TripStatus.DRIVER_ASSIGNED, TripStatus.DRIVER_ARRIVING),
+    "start": (TripStatus.DRIVER_ARRIVING, TripStatus.IN_PROGRESS),
+    "complete": (TripStatus.IN_PROGRESS, TripStatus.COMPLETED),
+}
+
+
+@transaction.atomic
+def advance_trip_by_driver(*, trip_id, driver, milestone: str) -> Trip:
+    """Assigned driver moves the trip forward. Idempotent: repeating a milestone that
+    already happened returns the trip unchanged."""
+    expected, target = DRIVER_MILESTONES[milestone]
+    trip = Trip.objects.select_for_update().filter(pk=trip_id, driver=driver).first()
+    if trip is None:
+        raise Trip.DoesNotExist
+    if trip.status == target:
+        return trip
+    if trip.status != expected:
+        raise ConflictError(f"Cannot {milestone} a trip in status {trip.status}.")
+    return state_machine.transition(trip, target)

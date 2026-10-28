@@ -10,6 +10,7 @@ from django.dispatch import receiver
 
 from apps.drivers.signals import driver_availability_changed
 from apps.locations.signals import driver_location_applied
+from apps.matching.signals import ride_offer_accepted, ride_offer_created
 from apps.trips.signals import trip_requested, trip_status_changed
 
 from . import builders, outbox
@@ -42,3 +43,30 @@ def on_location_applied(sender, fix, **kw):
         publish_sampled_location(fix)
     except Exception:  # noqa: BLE001 - never break a GPS update for analytics
         logger.exception("events.location.publish_error")
+
+
+@receiver(ride_offer_created, dispatch_uid="events.offer_created")
+def on_offer_created(sender, offer, **kw):
+    outbox.enqueue(
+        builders.ride_offer_created(
+            trip_id=offer.trip_id,
+            offer_id=offer.id,
+            driver_id=offer.driver_id,
+            expires_at=offer.expires_at,
+            created_at=offer.created_at,
+            straight_line_km=offer.straight_line_km,
+            grid_distance=offer.grid_distance,
+        )  # fmt: skip
+    )
+
+
+@receiver(ride_offer_accepted, dispatch_uid="events.offer_accepted")
+def on_offer_accepted(sender, offer, **kw):
+    outbox.enqueue(
+        builders.ride_accepted(
+            trip_id=offer.trip_id,
+            offer_id=offer.id,
+            driver_id=offer.driver_id,
+            accepted_at=offer.responded_at,
+        )  # fmt: skip
+    )

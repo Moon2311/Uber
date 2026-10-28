@@ -29,6 +29,7 @@ SECRET_KEY = env("DJANGO_SECRET_KEY")
 ALLOWED_HOSTS = env("DJANGO_ALLOWED_HOSTS")
 
 INSTALLED_APPS = [
+    "daphne",  # ASGI server: `runserver` then serves HTTP + WebSockets (must be first)
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -36,6 +37,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # Third party
+    "channels",
     "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt",
@@ -50,6 +52,8 @@ INSTALLED_APPS = [
     "apps.payments",
     "apps.events",
     "apps.analytics",
+    "apps.matching",
+    "apps.realtime",
 ]
 
 MIDDLEWARE = [
@@ -81,6 +85,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
+ASGI_APPLICATION = "config.asgi.application"
 
 # --- Database ---------------------------------------------------------------
 DATABASES = {"default": env.db("DATABASE_URL")}
@@ -268,6 +273,72 @@ EVENTS_CONSUMER_STALE_SECONDS = env.int("EVENTS_CONSUMER_STALE_SECONDS", default
 # Sampled location stream
 LOCATION_EVENTS_ENABLED = env.bool("LOCATION_EVENTS_ENABLED", default=True)
 LOCATION_EVENT_MIN_INTERVAL_SECONDS = env.int("LOCATION_EVENT_MIN_INTERVAL_SECONDS", default=15)
+
+# --- Matching (see docs/matching-engine.md) ----------------------------------
+MATCHING_OFFER_TTL_SECONDS = env.int("MATCHING_OFFER_TTL_SECONDS", default=15)
+# Redis reservation lock outlives the offer slightly (released explicitly anyway).
+MATCHING_LOCK_GRACE_SECONDS = env.int("MATCHING_LOCK_GRACE_SECONDS", default=5)
+MATCHING_TIMEOUT_SECONDS = env.int("MATCHING_TIMEOUT_SECONDS", default=120)
+MATCHING_MAX_OFFERS_PER_TRIP = env.int("MATCHING_MAX_OFFERS_PER_TRIP", default=5)
+MATCHING_MAX_RESERVE_ATTEMPTS = env.int("MATCHING_MAX_RESERVE_ATTEMPTS", default=3)
+MATCHING_TARGET_CANDIDATES = env.int("MATCHING_TARGET_CANDIDATES", default=5)
+MATCHING_MAX_K = env.int("MATCHING_MAX_K", default=12)
+MATCHING_MAX_RADIUS_KM = env.float("MATCHING_MAX_RADIUS_KM", default=6.0)
+MATCHING_ETA_SHORTLIST = env.int("MATCHING_ETA_SHORTLIST", default=8)
+MATCHING_RETRY_BASE_SECONDS = env.float("MATCHING_RETRY_BASE_SECONDS", default=2.0)
+MATCHING_RETRY_MAX_SECONDS = env.float("MATCHING_RETRY_MAX_SECONDS", default=15.0)
+MATCHING_LEASE_SECONDS = env.int("MATCHING_LEASE_SECONDS", default=30)
+MATCHING_WORKER_POLL_SECONDS = env.float("MATCHING_WORKER_POLL_SECONDS", default=0.5)
+MATCHING_WORKER_BATCH = env.int("MATCHING_WORKER_BATCH", default=20)
+MATCHING_MIN_DRIVER_RATING = env.float("MATCHING_MIN_DRIVER_RATING", default=0.0)
+# "redis" (advisory fast-path lock) or "none" (PostgreSQL only).
+MATCHING_RESERVATION_LOCKS = env("MATCHING_RESERVATION_LOCKS", default="redis")
+# ride category -> vehicle categories allowed to serve it (strict by default).
+MATCHING_CATEGORY_COMPATIBILITY = {
+    "ECONOMY": ["ECONOMY"],
+    "COMFORT": ["COMFORT"],
+    "XL": ["XL"],
+}
+MATCHING_RANKING = {
+    "eta_weight": 1.0,
+    "rating_weight_seconds": 60.0,
+    "fallback_eta_penalty_seconds": 0.0,
+    "max_pickup_eta_seconds": 900,
+}
+# Pickup ETA: "fallback" (labelled straight-line estimate) or "osrm".
+ETA_PROVIDER = env("ETA_PROVIDER", default="fallback")
+ETA_OSRM_URL = env("ETA_OSRM_URL", default="")
+ETA_TIMEOUT_SECONDS = env.float("ETA_TIMEOUT_SECONDS", default=1.5)
+ETA_FALLBACK_ROAD_FACTOR = 1.4
+ETA_FALLBACK_SPEED_KMH = 22.0
+ETA_FALLBACK_OVERHEAD_S = 60
+
+# --- Real-time WebSockets (see docs/realtime.md) -----------------------------
+# "redis" (required with more than one WebSocket instance) or "memory" (tests, one process).
+CHANNEL_LAYER_BACKEND = env("CHANNEL_LAYER_BACKEND", default="redis")
+REALTIME_HEARTBEAT_INTERVAL_SECONDS = env.float("REALTIME_HEARTBEAT_INTERVAL_SECONDS", default=25)
+REALTIME_HEARTBEAT_TIMEOUT_SECONDS = env.float("REALTIME_HEARTBEAT_TIMEOUT_SECONDS", default=60)
+REALTIME_MAX_MESSAGE_BYTES = env.int("REALTIME_MAX_MESSAGE_BYTES", default=4096)
+REALTIME_APPROACHING_RADIUS_M = env.float("REALTIME_APPROACHING_RADIUS_M", default=300)
+REALTIME_ALLOWED_ORIGINS = env.list("REALTIME_ALLOWED_ORIGINS", default=CORS_ALLOWED_ORIGINS)
+REALTIME_ALLOW_MISSING_ORIGIN = env.bool("REALTIME_ALLOW_MISSING_ORIGIN", default=True)
+if CHANNEL_LAYER_BACKEND == "redis":
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [REDIS_URL],
+                "prefix": f"{REDIS_KEY_PREFIX}:ws:",
+                "capacity": 1000,  # per-channel buffer; overflow drops for slow clients
+                "expiry": 60,
+                # Memberships of crashed instances vanish after this; live consumers
+                # re-add their groups on every heartbeat.
+                "group_expiry": 300,
+            },
+        }
+    }
+else:
+    CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 
 # --- Observability ----------------------------------------------------------
 METRICS_BACKEND = env("METRICS_BACKEND", default="apps.common.metrics.LoggingMetrics")
