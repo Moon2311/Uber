@@ -1,0 +1,18 @@
+# Prometheus Operator resources (kube-prometheus-stack). Pods expose /metrics on
+# 8000 (api), 8001 (realtime) and 9100 (workers); the scrape token comes from
+# the same secret the app reads (METRICS_TOKEN).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata: {name: ride-hailing}
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/part-of: ride-hailing}
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      bearerTokenSecret: {name: app-secrets, key: METRICS_TOKEN}
+    - port: ws
+      path: /metrics
+      bearerTokenSecret: {name: app-secrets, key: METRICS_TOKEN}
+    - port: metrics
+      path: /

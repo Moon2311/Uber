@@ -15,6 +15,9 @@ class Command(BaseCommand):
         from apps.events.consumer import ConsumerRunner
 
         topics, handlers = group_config(group)
+        from apps.common.observability import start_worker_metrics_server
+
+        start_worker_metrics_server()
         if not handlers:
             raise CommandError(f"No handlers for {group}")
         ConsumerRunner(physical_group(group), topics, handlers).run(

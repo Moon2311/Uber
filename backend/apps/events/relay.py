@@ -52,8 +52,11 @@ def backoff_seconds(attempts: int) -> float:
 
 def _to_message(row: OutboxEvent) -> OutgoingMessage:
     event = event_from_row(row)
+    headers = event.headers()
+    if row.correlation_id:
+        headers = [*headers, ("correlation_id", row.correlation_id.encode())]
     return OutgoingMessage(
-        topic=physical(row.topic), key=row.key, value=event.to_bytes(), headers=event.headers()
+        topic=physical(row.topic), key=row.key, value=event.to_bytes(), headers=headers
     )
 
 

@@ -96,6 +96,14 @@ class Trip(TimestampedModel):
     estimated_distance_km = models.DecimalField(max_digits=10, decimal_places=3)
     estimated_duration_minutes = models.PositiveIntegerField()
     currency = models.CharField(max_length=3)
+    # The upfront price the rider accepted. `estimated_fare` == fare_quote.amount
+    # (surge included) and is what the payment charges; the quote keeps the
+    # breakdown and the pricing rule version that produced it.
+    fare_quote = models.OneToOneField(
+        "pricing.FareQuote", on_delete=models.PROTECT, null=True, blank=True, related_name="trip"
+    )
+    pricing_version = models.PositiveIntegerField(null=True, blank=True)
+    surge_multiplier = models.DecimalField(max_digits=4, decimal_places=2, default=1)
     # Optimistic concurrency token: +1 on every status transition. Transitions are
     # conditional UPDATEs on (status, state_version), so a writer acting on a stale
     # read loses cleanly even if it forgot to lock the row.

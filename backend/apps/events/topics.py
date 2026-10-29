@@ -38,6 +38,7 @@ class TopicSpec:
 DRIVER_LOCATION = "driver.location.v1"
 DRIVER_AVAILABILITY = "driver.availability.v1"
 TRIP_EVENTS = "trip.events.v1"
+PAYMENT_EVENTS = "payment.events.v1"
 DEAD_LETTER = "events.dlq.v1"
 
 TOPICS: dict[str, TopicSpec] = {
@@ -64,6 +65,13 @@ TOPICS: dict[str, TopicSpec] = {
             retention_ms=7 * DAY_MS,
             description="Every trip lifecycle event (RideRequested ... TripCompleted) keyed "
             "by trip_id, so one trip's events stay ordered in one partition.",
+        ),
+        TopicSpec(
+            PAYMENT_EVENTS,
+            partitions=6,
+            retention_ms=7 * DAY_MS,
+            description="Payment status changes keyed by trip_id. Informational: the "
+            "payment record in PostgreSQL (reconciled with the provider) is authoritative.",
         ),
         TopicSpec(
             DEAD_LETTER,

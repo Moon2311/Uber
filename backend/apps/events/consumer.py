@@ -96,6 +96,16 @@ class EventProcessor:
         self.sleep = sleep
 
     def process(self, msg: ConsumedMessage) -> Outcome:
+        from apps.common.context import bound_request_id
+
+        correlation = next((v for k, v in msg.headers if k == "correlation_id"), None)
+        if isinstance(correlation, bytes):
+            correlation = correlation.decode("ascii", "replace")
+        # Handler logs carry the id of the API request that caused the event.
+        with bound_request_id(correlation):
+            return self._process(msg)
+
+    def _process(self, msg: ConsumedMessage) -> Outcome:
         try:
             event = decode(msg.value)
         except SchemaError as exc:
@@ -247,6 +257,9 @@ class ConsumerRunner:
             logger.info("events.consumer.stopped", extra={"group": self.group})
 
     def _heartbeat(self):
+        from apps.common.worker import beat
+
+        beat()  # container liveness (every poll); the DB heartbeat below is throttled
         now = time.monotonic()
         if now - self._last_beat < settings.CONSUMER_HEARTBEAT_SECONDS:
             return

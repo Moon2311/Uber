@@ -1,4 +1,30 @@
+# LOCAL DEVELOPMENT stack. Production runs on Kubernetes (deploy/k8s) with managed
+# PostgreSQL / Redis / Kafka; see docs/deployment.md. Host ports bind to 127.0.0.1.
 name: ride-hailing
+
+x-app: &app
+  build:
+    context: ./backend
+    args:
+      APP_RELEASE: ${APP_RELEASE:-local}
+  image: ride-hailing-backend:${APP_RELEASE:-local}
+  env_file: .env
+  environment: &app-env
+    DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
+    REDIS_URL: redis://redis:6379/0
+    CACHE_URL: redis://redis:6379/1
+    CACHE_BACKEND: redis
+    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    CHANNEL_LAYER_BACKEND: redis
+    METRICS_BACKEND: apps.common.metrics.PrometheusMetrics
+    METRICS_PORT: "9100"
+    DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,backend,realtime-1,realtime-2
+  restart: unless-stopped
+  depends_on: &app-deps
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
 
 services:
   db:
@@ -9,7 +35,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     ports:
       # 5433 on the host avoids clashing with a locally installed PostgreSQL.
-      - "${POSTGRES_HOST_PORT:-5433}:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -28,7 +54,7 @@ services:
       --maxmemory ${REDIS_MAXMEMORY:-256mb} --maxmemory-policy noeviction
     ports:
       # 6380 on the host avoids clashing with a locally installed Redis.
-      - "${REDIS_HOST_PORT:-6380}:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6380}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -65,97 +91,118 @@ services:
       retries: 12
       start_period: 15s
 
-  backend:
-    build: ./backend
-    env_file: .env
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
-      REDIS_URL: redis://redis:6379/0
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-    ports:
-      - "8000:8000"
+  # One-shot jobs: schema first, topics second. App services wait for `migrate`.
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    restart: "no"
     depends_on:
       db:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-      # Deliberately NOT kafka: the API must start and serve without Kafka
-      # (events wait in the PostgreSQL outbox).
 
-  # Publishes committed outbox rows to Kafka (single active instance via a
-  # PostgreSQL advisory lock; extra replicas idle as hot standbys).
-  outbox-relay:
-    build: ./backend
-    env_file: .env
-    command: ["sh", "-c", "python manage.py ensure_kafka_topics --wait 60 && python manage.py run_outbox_relay"]
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
-      REDIS_URL: redis://redis:6379/0
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  kafka-init:
+    <<: *app
+    command: ["ensure_kafka_topics", "--wait", "60"]
+    restart: "no"
     depends_on:
-      backend:
-        condition: service_started  # runs migrations
       kafka:
         condition: service_healthy
-    restart: unless-stopped
 
-  # WebSocket servers (ASGI / Daphne). Two instances share state only through the
-  # Redis channel layer, demonstrating horizontal scaling of real-time delivery.
-  realtime-1: &realtime
-    build: ./backend
-    env_file: .env
-    command: ["daphne", "-b", "0.0.0.0", "-p", "8001", "--ping-interval", "20", "--ping-timeout", "30", "config.asgi:application"]
+  backend:
+    <<: *app
+    command: ["web"]
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
-      REDIS_URL: redis://redis:6379/0
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      CHANNEL_LAYER_BACKEND: redis
+      <<: *app-env
+      METRICS_PORT: "0"  # gunicorn serves /metrics itself (multiprocess)
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
     ports:
-      - "8001:8001"
-    depends_on:
-      backend:
-        condition: service_started
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
+      - "127.0.0.1:8000:8000"
+    # Deliberately NOT kafka: the API must start and serve without Kafka.
+
+  # WebSocket servers: two instances share state only through the Redis channel layer.
+  realtime-1: &realtime
+    <<: *app
+    command: ["asgi"]
+    # Measured: the default soft limit (1024 fds) caps a server at ~1000 sockets.
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    environment:
+      <<: *app-env
+      PORT: "8001"
+      METRICS_PORT: "0"
+    ports:
+      - "127.0.0.1:8001:8001"
 
   realtime-2:
     <<: *realtime
-    command: ["daphne", "-b", "0.0.0.0", "-p", "8002", "--ping-interval", "20", "--ping-timeout", "30", "config.asgi:application"]
+    environment:
+      <<: *app-env
+      PORT: "8002"
+      METRICS_PORT: "0"
     ports:
-      - "8002:8002"
+      - "127.0.0.1:8002:8002"
 
-  # Matching engine worker (safe to scale: SKIP LOCKED + leases + DB constraints).
+  # Single active relay (advisory lock); extra replicas idle as hot standbys.
+  outbox-relay:
+    <<: *app
+    command: ["run_outbox_relay"]
+    depends_on:
+      <<: *app-deps
+      kafka-init:
+        condition: service_completed_successfully
+
   matching-worker:
-    build: ./backend
-    env_file: .env
-    command: ["python", "manage.py", "run_matching_worker"]
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
-      REDIS_URL: redis://redis:6379/0
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-    depends_on:
-      backend:
-        condition: service_started  # runs migrations
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
+    <<: *app
+    command: ["run_matching_worker"]
 
-  # Example downstream consumer (analytics read models).
-  consumer-analytics:
-    build: ./backend
-    env_file: .env
-    command: ["sh", "-c", "python manage.py ensure_kafka_topics --wait 60 && python manage.py run_event_consumer analytics"]
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-ridehailing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ridehailing}
-      REDIS_URL: redis://redis:6379/0
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  # Illustrative surge policy: see docs/pricing-payments.md (legal notice).
+  surge-updater:
+    <<: *app
+    command: ["update_surge"]
+
+  payments-worker:
+    <<: *app
+    command: ["run_payments_worker"]
+
+  notification-worker:
+    <<: *app
+    command: ["run_notification_worker"]
+
+  # Periodic maintenance (expire stale drivers, reconcile, prune...): one active.
+  scheduler:
+    <<: *app
+    command: ["run_scheduler"]
+
+  # System gauges for Prometheus (freshness, backlogs, lag, DB health).
+  ops-monitor:
+    <<: *app
+    command: ["run_ops_monitor"]
+
+  consumer-analytics: &consumer
+    <<: *app
+    command: ["run_event_consumer", "analytics"]
     depends_on:
-      backend:
-        condition: service_started
-      kafka:
-        condition: service_healthy
-    restart: unless-stopped
+      <<: *app-deps
+      kafka-init:
+        condition: service_completed_successfully
+
+  consumer-fraud:
+    <<: *consumer
+    command: ["run_event_consumer", "fraud"]
+
+  consumer-notifications:
+    <<: *consumer
+    command: ["run_event_consumer", "notifications"]
+
+  # `docker compose --profile observability up -d` -> http://localhost:9090
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["observability"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+    volumes:
+      - ./deploy/prometheus:/etc/prometheus:ro
+    ports:
+      - "127.0.0.1:9090:9090"
 
 volumes:
   pgdata:

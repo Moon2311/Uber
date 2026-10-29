@@ -145,3 +145,28 @@ def test_released_driver_leaves_the_trip_and_receives_nothing_more():
         await d1.close()
 
     run(scenario)
+
+
+def test_payment_status_is_pushed_live_to_the_rider_only():
+    from apps.payments.providers.sandbox import SandboxProvider
+    from apps.payments.services import charge_due_payments
+    from apps.payments.tests.conftest import completed_trip
+    from conftest import make_rider
+
+    trip, payment = completed_trip()
+    owner, stranger = trip.rider, make_rider()  # load before entering async code
+
+    async def scenario():
+        rider, other = Client(owner), Client(stranger)
+        await rider.connect()
+        await other.connect()
+        await db(lambda: charge_due_payments(provider=SandboxProvider()))()
+        await commit()
+        pushed = [m["data"] for m in await rider.drain() if m["type"] == "payment.status"]
+        assert [p["status"] for p in pushed] == ["PROCESSING", "PAID"]
+        assert pushed[-1]["payment_id"] == str(payment.pk) and "provider" not in str(pushed)
+        assert [m for m in await other.drain() if m["type"] == "payment.status"] == []
+        await rider.close()
+        await other.close()
+
+    run(scenario)

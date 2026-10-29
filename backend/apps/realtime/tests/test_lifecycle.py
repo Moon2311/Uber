@@ -152,3 +152,44 @@ def test_redis_channel_layer_delivers_across_instances(settings, redis_client):
         await c.close()
 
     run(scenario)
+
+
+def test_inbound_flood_is_refused_then_disconnected(settings, recorded_metrics):
+    settings.REALTIME_INBOUND_RATE_PER_SECOND = 1
+    settings.REALTIME_INBOUND_BURST = 3
+    settings.REALTIME_INBOUND_MAX_VIOLATIONS = 5
+    rider = make_rider()
+
+    async def scenario():
+        c = Client(rider)
+        await c.connect()
+        for _ in range(3):  # within the burst
+            await c.send(type="ping")
+            await c.recv("pong")
+        await c.send(type="ping")
+        assert (await c.recv("error"))["code"] == "rate_limited"
+        for _ in range(4):
+            await c.send(type="ping")
+        out = await c.c.receive_output(timeout=2)
+        while out["type"] != "websocket.close":
+            out = await c.c.receive_output(timeout=2)
+        assert out["code"] == 4429
+
+    run(scenario)
+    assert recorded_metrics.count("realtime.rate_limited") == 5
+
+
+def test_active_connection_gauge_tracks_open_sockets(recorded_metrics):
+    rider = make_rider()
+    key = ("realtime.connections", (("role", "RIDER"),))
+
+    async def scenario():
+        a, b = Client(rider), Client(rider)
+        await a.connect()
+        await b.connect()
+        assert recorded_metrics.gauges[key] == 2
+        await a.close()
+        await b.close()
+
+    run(scenario)
+    assert recorded_metrics.gauges[key] == 0

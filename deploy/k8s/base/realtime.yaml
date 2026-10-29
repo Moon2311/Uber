@@ -1,0 +1,174 @@
+# WebSocket servers (daphne). Measured ~2000 active sockets saturate one process on the
+# reference machine (docs/performance.md): scale on CPU, scale DOWN slowly (every
+# removed pod disconnects its clients, who reconnect and resync). Needs nofile >= 65536
+# on nodes (default container runtimes usually allow it; verify).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: realtime
+  labels: &id001
+    app.kubernetes.io/name: realtime
+    app.kubernetes.io/component: realtime
+    app.kubernetes.io/part-of: ride-hailing
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: realtime
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels: *id001
+      annotations:
+        prometheus.io/scrape: 'true'
+    spec:
+      serviceAccountName: ride-hailing
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: realtime
+        image: ghcr.io/example/ride-hailing-backend
+        imagePullPolicy: IfNotPresent
+        args:
+        - asgi
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secrets
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: PORT
+          value: '8001'
+        - name: METRICS_PORT
+          value: '0'
+        resources:
+          requests:
+            cpu: 250m
+            memory: 384Mi
+          limits:
+            cpu: '1'
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        ports:
+        - name: ws
+          containerPort: 8001
+        startupProbe:
+          httpGet:
+            path: /api/v1/health/live/
+            port: ws
+          periodSeconds: 3
+          failureThreshold: 20
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health/live/
+            port: ws
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health/ready/
+            port: ws
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - sleep
+              - '10'
+      volumes:
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 128Mi
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: realtime
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: realtime
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: realtime
+  labels:
+    app.kubernetes.io/part-of: ride-hailing
+    app.kubernetes.io/name: realtime
+spec:
+  selector:
+    app.kubernetes.io/name: realtime
+  ports:
+  - name: ws
+    port: 8001
+    targetPort: ws
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: realtime
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: realtime
+  minReplicas: 3
+  maxReplicas: 40
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 900
+      policies:
+      - type: Percent
+        value: 20
+        periodSeconds: 60
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: realtime
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: realtime
+  maxUnavailable: 1

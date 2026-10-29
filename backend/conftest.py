@@ -33,6 +33,8 @@ def _isolate(settings):
     settings.REDIS_KEY_PREFIX = f"test-{uuid.uuid4().hex[:12]}"
     # Kafka is opt-in per test (kafka_topics fixture); outbox rows are still written.
     settings.KAFKA_ENABLED = False
+    settings.PAYMENTS_SANDBOX_ALLOWED = True
+    settings.PAYMENTS_WEBHOOK_SECRETS = ["whsec_test_current", "whsec_test_previous"]
     metrics_module.metrics.cache_clear()
     yield
     metrics_module.metrics.cache_clear()

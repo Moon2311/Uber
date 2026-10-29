@@ -1,5 +1,11 @@
 .venv
-__pycache__
+**/__pycache__
 .pytest_cache
 .ruff_cache
 .env
+staticfiles
+**/tests
+conftest.py
+requirements-dev.txt
+requirements-load.txt
+loadtest

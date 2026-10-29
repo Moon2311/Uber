@@ -1,0 +1,173 @@
+name: ci
+
+on:
+  push: {branches: [main]}
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"  # same as the production image
+  DJANGO_SECRET_KEY: ci-only-not-a-secret-0123456789abcdefghijklmnopqrstuvwxyz
+  DATABASE_URL: postgres://ci:ci@localhost:5432/ridehailing
+  TEST_REDIS_URL: redis://localhost:6379/15
+  TEST_KAFKA_BOOTSTRAP: localhost:9094
+  REDIS_URL: redis://localhost:6379/0
+  KAFKA_BOOTSTRAP_SERVERS: localhost:9094
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ env.PYTHON_VERSION }}", cache: pip, cache-dependency-path: backend/requirements*.txt}
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check . && ruff format --check .
+      - name: Known vulnerabilities in production dependencies
+        # Every ignore is justified in docs/production-readiness.md ("Dependency
+        # advisories"). Twisted: IMAP/IRC/conch/XML/DNS modules are never loaded;
+        # CVE-2026-115877 (HTTP header validation, used by daphne) is an OPEN risk,
+        # mitigated by ingress-nginx in front, until twisted 26.10.0 final ships.
+        run: >
+          pip-audit -r requirements.txt --progress-spinner off
+          --ignore-vuln CVE-2026-106454 --ignore-vuln CVE-2026-115778
+          --ignore-vuln CVE-2026-115774 --ignore-vuln CVE-2026-115775
+          --ignore-vuln CVE-2026-115776 --ignore-vuln CVE-2026-83813
+          --ignore-vuln CVE-2026-115877
+
+  migrations:
+    runs-on: ubuntu-24.04
+    defaults: {run: {working-directory: backend}}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: {POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ridehailing}
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U ci" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ env.PYTHON_VERSION }}", cache: pip, cache-dependency-path: backend/requirements*.txt}
+      - run: pip install -r requirements.txt
+      - name: Models and migrations agree
+        run: python manage.py makemigrations --check --dry-run
+      - name: Migrate an empty database (forward)
+        run: python manage.py migrate --noinput
+      - name: Nothing left unapplied
+        run: python manage.py migrate --check
+      - name: Deployment checks (staging-like settings)
+        env:
+          APP_ENV: staging
+          DJANGO_DEBUG: "false"
+          DJANGO_SECRET_KEY: ci-staging-like-secret-key-0123456789-abcdefghijklmnopqrstuvwxyz
+          JWT_SIGNING_KEY: ci-staging-like-jwt-key-0123456789-abcdefghijklmnopqrstuvwxyz
+          DJANGO_ALLOWED_HOSTS: api.staging.example.com
+          CORS_ALLOWED_ORIGINS: https://app.staging.example.com
+          CSRF_TRUSTED_ORIGINS: https://app.staging.example.com
+          NUM_PROXIES: "1"
+          METRICS_TOKEN: ci-metrics-token-0123456789abcdef
+          PAYMENTS_WEBHOOK_SECRETS: whsec_ci_0123456789abcdef0123456789abcdef
+          PAYMENTS_SANDBOX_ALLOWED: "true"
+          ADMIN_URL_PATH: ops-ci/
+        run: python manage.py check --deploy --fail-level ERROR
+
+  test:
+    runs-on: ubuntu-24.04
+    defaults: {run: {working-directory: backend}}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: {POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ridehailing}
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U ci" --health-interval 5s --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 20
+      kafka:
+        image: apache/kafka:3.9.0
+        ports: ["9094:9094"]
+        env:
+          KAFKA_NODE_ID: "1"
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,EXTERNAL://localhost:9094
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ env.PYTHON_VERSION }}", cache: pip, cache-dependency-path: backend/requirements*.txt}
+      - run: pip install -r requirements-dev.txt
+      - name: Wait for Kafka
+        run: |
+          python - <<'PY'
+          import time
+          from confluent_kafka.admin import AdminClient
+          deadline = time.time() + 120
+          while True:
+              try:
+                  AdminClient({"bootstrap.servers": "localhost:9094"}).list_topics(timeout=5); break
+              except Exception:
+                  if time.time() > deadline: raise
+                  time.sleep(3)
+          PY
+      - name: Test suite (PostgreSQL + Redis + Kafka, concurrency tests included)
+        run: python -m pytest -q -p no:cacheprovider --junitxml=junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: junit, path: backend/junit.xml}
+
+  image:
+    runs-on: ubuntu-24.04
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build --build-arg APP_RELEASE=${{ github.sha }} -t ride-hailing-backend:${{ github.sha }} backend
+      - name: Smoke - runs non-root with a read-only root filesystem
+        run: |
+          docker run -d --name smoke --read-only --tmpfs /tmp -e DJANGO_SECRET_KEY=x \
+            -e DATABASE_URL=postgres://x@127.0.0.1:1/x -e DJANGO_ALLOWED_HOSTS=127.0.0.1 \
+            ride-hailing-backend:${{ github.sha }} web
+          for i in $(seq 1 30); do docker exec smoke python /app/healthcheck.py && break; sleep 1; done
+          docker exec smoke python /app/healthcheck.py
+          test "$(docker exec smoke id -u)" = "10001"
+      - name: Image vulnerability scan (OS + Python packages)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ride-hailing-backend:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  deploy-config:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Alert rules and Prometheus config
+        run: docker run --rm -v "$PWD/deploy/prometheus:/cfg" --entrypoint promtool prom/prometheus:v2.55.1 check config /cfg/prometheus.yml
+      - name: Kubernetes manifests build and validate (k8s 1.30 schemas + CRDs)
+        run: |
+          for env in staging production; do
+            docker run --rm -v "$PWD/deploy/k8s:/k" -w /k registry.k8s.io/kustomize/kustomize:v5.4.3 build overlays/$env > /tmp/$env.yaml
+            docker run --rm -v /tmp:/m ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary -kubernetes-version 1.30.0 \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+              /m/$env.yaml
+          done
+      - name: Compose file is valid
+        run: cp .env.example .env && POSTGRES_PASSWORD=ci docker compose config -q

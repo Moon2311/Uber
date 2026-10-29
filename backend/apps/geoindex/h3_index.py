@@ -78,6 +78,14 @@ class H3GeoIndex:
     def cell_center(self, cell: str) -> tuple[float, float]:
         return h3.cell_to_latlng(self.validate_cell(cell))
 
+    def children(self, cell: str, child_resolution: int) -> list[str]:
+        """Cells at a finer resolution that make up `cell` (e.g. a surge zone's
+        index cells)."""
+        cell = self.validate_cell(cell)
+        if not (self.resolution <= child_resolution <= MAX_RESOLUTION):
+            raise GeoIndexError(f"Child resolution must be in [{self.resolution}, 15]")
+        return list(h3.cell_to_children(cell, child_resolution))
+
     # --- neighbourhoods -----------------------------------------------------
     def disk(self, cell: str, k: int) -> list[str]:
         """All cells within grid distance k (inclusive), center included."""

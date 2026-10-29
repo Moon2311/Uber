@@ -10,12 +10,46 @@ from rest_framework.views import APIView
 logger = logging.getLogger(__name__)
 
 
-class HealthView(APIView):
-    """Liveness + database readiness probe."""
+class LiveView(APIView):
+    """Liveness: the process answers. No dependencies (a database outage must not
+    make the orchestrator restart every pod)."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
     throttle_classes = []
+
+    @extend_schema(responses=inline_serializer("Live", {"status": serializers.CharField()}))
+    def get(self, request):
+        return Response({"status": "ok"})
+
+
+class ReadyView(APIView):
+    """Readiness: may this pod receive traffic? Only PostgreSQL is required (Redis
+    and Kafka have fallbacks). Body is minimal on purpose: it is public."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = []
+
+    @extend_schema(responses=inline_serializer("Ready", {"status": serializers.CharField()}))
+    def get(self, request):
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+        except Exception as exc:  # noqa: BLE001
+            # One line, no traceback: probes repeat every few seconds per pod.
+            logger.warning("health.ready.database_unavailable",
+                           extra={"error": type(exc).__name__})  # fmt: skip
+            return Response({"status": "unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({"status": "ok"})
+
+
+class HealthView(APIView):
+    """Dependency overview. Anonymous callers get the status only; staff get the
+    details (backend names, outbox backlog), which are internal topology."""
+
+    permission_classes = [AllowAny]
 
     @extend_schema(
         responses=inline_serializer(
@@ -53,6 +87,8 @@ class HealthView(APIView):
             overall, code = "degraded", status.HTTP_200_OK
         else:
             overall, code = "unavailable", status.HTTP_503_SERVICE_UNAVAILABLE
+        if not (request.user and request.user.is_staff):
+            return Response({"status": overall}, status=code)
         return Response(
             {"status": overall, "database": db_status, "live_store": live, "events": events},
             status=code,

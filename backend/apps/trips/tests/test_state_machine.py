@@ -246,10 +246,10 @@ def test_payment_follows_trip_but_trip_never_reads_payment():
 
 def test_cancellation_cancels_only_an_unsettled_payment():
     trip = new_trip()
-    PaymentRecord.objects.filter(trip=trip).update(status=PaymentStatus.AUTHORIZED)
+    PaymentRecord.objects.filter(trip=trip).update(status=PaymentStatus.PROCESSING)
     cancel_trip_by_rider(trip_id=trip.pk, rider=trip.rider)
-    # Releasing an authorization is the payments domain's job, not the trip's.
-    assert PaymentRecord.objects.get(trip=trip).status == PaymentStatus.AUTHORIZED
+    # An in-flight charge is settled by payments reconciliation, not by the trip.
+    assert PaymentRecord.objects.get(trip=trip).status == PaymentStatus.PROCESSING
 
 
 # --- HTTP ---------------------------------------------------------------------------------

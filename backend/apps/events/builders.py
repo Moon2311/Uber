@@ -76,7 +76,7 @@ def trip_completed(trip) -> Event:
             "driver_id": trip.driver_id,
             "ride_category": trip.ride_category,
             "estimated_fare": trip.estimated_fare,
-            "final_fare": None,  # fare finalisation arrives with payments
+            "final_fare": trip.estimated_fare,  # upfront price from the accepted quote
             "currency": trip.currency,
             "estimated_distance_km": trip.estimated_distance_km,
             "started_at": trip.started_at,
@@ -144,5 +144,23 @@ def driver_location_updated(fix, reason: str) -> Event:
             "heading": fix.heading,
             "speed_kmh": fix.speed_kmh,
             "reason": reason,
+        },
+    )
+
+
+def payment_status_changed(payment, from_status, to_status) -> Event:
+    return make_event(
+        "PaymentStatusChanged",
+        {
+            "payment_id": payment.id,
+            "trip_id": payment.trip_id,
+            "rider_id": payment.rider_id,
+            "from_status": from_status,
+            "to_status": to_status,
+            "amount": payment.amount,
+            "currency": payment.currency,
+            "method": payment.method,
+            "failure_code": payment.failure_code or None,
+            "changed_at": payment.updated_at,
         },
     )

@@ -75,15 +75,43 @@ class NearbyQuerySerializer(serializers.Serializer):
     category = serializers.ChoiceField(choices=RideCategory.choices, required=False)
 
 
-class NearbyDriverSerializer(serializers.Serializer):
-    """Deliberately minimal: no names, plates or contact details."""
+def driver_pseudonym(public_id, viewer_id, *, at=None) -> str:
+    """Stable for one rider within one hour (map markers can animate), unlinkable
+    across riders and hours: nobody can follow one driver around the city."""
+    import hashlib
+    import hmac
+    import time
 
-    id = serializers.CharField(source="public_id")
-    lat = serializers.FloatField(source="latitude")
-    lng = serializers.FloatField(source="longitude")
+    from django.conf import settings
+
+    bucket = int((at or time.time()) // 3600)
+    msg = f"{public_id}:{viewer_id}:{bucket}".encode()
+    return hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()[:20]
+
+
+class NearbyDriverSerializer(serializers.Serializer):
+    """Deliberately minimal: no names, plates or contact details, a rotating
+    per-rider pseudonym instead of the driver id, and positions coarsened to
+    ~100 m (dispatch uses exact positions server-side; the map does not need them)."""
+
+    id = serializers.SerializerMethodField()
+    lat = serializers.SerializerMethodField()
+    lng = serializers.SerializerMethodField()
     heading = serializers.FloatField(allow_null=True)
-    distance_km = serializers.FloatField()
+    distance_km = serializers.SerializerMethodField()
     category = serializers.CharField()
+
+    def get_id(self, obj) -> str:
+        return driver_pseudonym(obj.public_id, self.context["viewer_id"])
+
+    def get_lat(self, obj) -> float:
+        return round(float(obj.latitude), 3)
+
+    def get_lng(self, obj) -> float:
+        return round(float(obj.longitude), 3)
+
+    def get_distance_km(self, obj) -> float:
+        return round(float(obj.distance_km), 1)
 
 
 class NearbyResponseSerializer(serializers.Serializer):

@@ -10,7 +10,8 @@ from django.db import transaction
 
 from apps.accounts.models import User
 from apps.common.exceptions import ConflictError
-from apps.pricing.services import Point, get_fare_estimator
+from apps.common.guards import run_guards
+from apps.pricing.services import accept_quote, quote_fare
 
 from . import audit, state_machine
 from .models import Trip, TripEventType, TripStatus
@@ -19,18 +20,29 @@ from .state_machine import Actor
 
 
 @transaction.atomic
-def request_trip(*, rider: User, pickup: dict, dropoff: dict, ride_category: str) -> Trip:
+def request_trip(
+    *,
+    rider: User,
+    pickup: dict,
+    dropoff: dict,
+    ride_category: str,
+    quote_id=None,
+    payment_method_id=None,
+) -> Trip:
     # Serialise concurrent requests from the same rider on the user row; the partial
     # unique index trip_one_active_per_rider is the final guard if anything slips by.
     User.objects.select_for_update().get(pk=rider.pk)
     if Trip.objects.filter(rider=rider).active().exists():
         raise ConflictError("You already have an active trip.")
+    run_guards("trip_request", user=rider)  # blocking checks (unpaid balance, fraud hold)
 
-    estimate = get_fare_estimator().estimate(
-        pickup=Point(pickup["lat"], pickup["lng"]),
-        dropoff=Point(dropoff["lat"], dropoff["lng"]),
-        category=ride_category,
-    )
+    # Upfront price: the quote the rider saw, or a fresh one for older clients.
+    if quote_id is not None:
+        quote = accept_quote(quote_id=quote_id, rider=rider, pickup=pickup, dropoff=dropoff,
+                             ride_category=ride_category)  # fmt: skip
+    else:
+        quote = quote_fare(rider=rider, pickup=pickup, dropoff=dropoff,
+                           ride_category=ride_category)  # fmt: skip
     trip = Trip.objects.create(
         rider=rider,
         pickup_latitude=pickup["lat"],
@@ -41,10 +53,13 @@ def request_trip(*, rider: User, pickup: dict, dropoff: dict, ride_category: str
         dropoff_address=dropoff.get("address", ""),
         ride_category=ride_category,
         status=TripStatus.REQUESTED,  # the matching worker moves it to SEARCHING
-        estimated_fare=estimate.amount,
-        estimated_distance_km=estimate.distance_km,
-        estimated_duration_minutes=estimate.duration_minutes,
-        currency=estimate.currency,
+        estimated_fare=quote.amount,
+        estimated_distance_km=quote.distance_km,
+        estimated_duration_minutes=quote.duration_minutes,
+        currency=quote.currency,
+        fare_quote=quote,
+        pricing_version=quote.rule_set.version,
+        surge_multiplier=quote.surge_multiplier,
     )
     actor = Actor.rider(rider)
     event = audit.record(
@@ -52,7 +67,8 @@ def request_trip(*, rider: User, pickup: dict, dropoff: dict, ride_category: str
         state_version=0, occurred_at=trip.created_at,
     )  # fmt: skip
     # Receivers (same transaction): pending payment, matching job, outbox.
-    trip_requested.send(sender=Trip, trip=trip, actor_type=actor.type, event_id=event.event_id)
+    trip_requested.send(sender=Trip, trip=trip, actor_type=actor.type, event_id=event.event_id,
+                        payment_method_id=payment_method_id)  # fmt: skip
     return trip
 
 

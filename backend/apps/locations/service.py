@@ -114,6 +114,8 @@ class LocationService:
                 accuracy_m=accuracy_m,
             )
 
+            # Device -> server delay: GPS freshness as seen at ingestion.
+            metrics().timing("location.fix_age_ms", (now - fix.recorded_at).total_seconds() * 1000)
             if now - fix.recorded_at > timedelta(seconds=settings.LOCATION_MAX_AGE_SECONDS):
                 return self._ignored(fix, UpdateOutcome.TOO_OLD)
             if accuracy_m is not None and accuracy_m > settings.LOCATION_MAX_ACCURACY_M:

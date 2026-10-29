@@ -163,8 +163,10 @@ def test_api_keeps_working_when_redis_is_unreachable(redis_with_fallback, settin
     )
     assert response.status_code == 200 and response.json()["accepted"] is True
     assert DriverLocation.objects.filter(driver=driver).exists()
-    health = client_for(driver.user).get("/api/v1/health/").json()
+    health = staff_client().get("/api/v1/health/").json()
     assert health["status"] == "degraded" and health["live_store"]["status"] == "degraded"
+    # Anonymous callers learn only the status, not the topology.
+    assert client_for(driver.user).get("/api/v1/health/").json() == {"status": "degraded"}
 
 
 def test_api_returns_503_without_fallback(settings):
@@ -181,7 +183,7 @@ def test_api_returns_503_without_fallback(settings):
 
 
 def test_health_reports_redis_ok(redis_with_fallback, api_client):
-    body = api_client.get("/api/v1/health/").json()
+    body = staff_client().get("/api/v1/health/").json()
     assert body["status"] == "ok"
     assert body["live_store"]["primary"]["backend"] == "redis"
     assert body["live_store"]["primary"]["status"] == "ok"
@@ -314,3 +316,9 @@ def test_reconcile_command_fails_cleanly_when_redis_down(redis_with_fallback, se
     settings.REDIS_URL = "redis://localhost:1/0"
     with pytest.raises(CommandError):
         call_command("reconcile_live_store")
+
+
+def staff_client():
+    from conftest import make_rider
+
+    return client_for(make_rider(is_staff=True))

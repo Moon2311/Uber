@@ -10,6 +10,8 @@ class TripCreateSerializer(serializers.Serializer):
     pickup = LocationPointSerializer()
     dropoff = LocationPointSerializer()
     ride_category = serializers.ChoiceField(choices=RideCategory.choices)
+    quote_id = serializers.UUIDField(required=False, default=None)  # from /pricing/estimate/
+    payment_method_id = serializers.UUIDField(required=False, default=None)  # default: card/cash
 
     def validate(self, attrs):
         # Reject server-controlled fields (driver, rider, status, fare...) outright
@@ -78,6 +80,9 @@ class TripSerializer(serializers.ModelSerializer):
             "pickup",
             "dropoff",
             "estimated_fare",
+            "fare_quote",
+            "pricing_version",
+            "surge_multiplier",
             "estimated_distance_km",
             "estimated_duration_minutes",
             "currency",

@@ -6,6 +6,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError, connection
 
+from apps.common.worker import beat
 from apps.events.relay import OutboxRelay
 
 logger = logging.getLogger("apps.events")
@@ -21,12 +22,17 @@ class Command(BaseCommand):
         from apps.events.kafka import get_publisher
 
         relay = OutboxRelay(get_publisher())
+        if not once:
+            from apps.common.observability import start_worker_metrics_server
+
+            start_worker_metrics_server()
         stop = {"flag": False}
         signal.signal(signal.SIGTERM, lambda *_: stop.update(flag=True))
         signal.signal(signal.SIGINT, lambda *_: stop.update(flag=True))
         logger.info("events.relay.started")
         total = 0
         while not stop["flag"]:
+            beat()
             try:
                 result = relay.run_once()
             except DatabaseError:

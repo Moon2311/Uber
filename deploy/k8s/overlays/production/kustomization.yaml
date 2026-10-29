@@ -1,0 +1,9 @@
+# Production. The image tag is ALWAYS an immutable git sha (never :latest), so a
+# rollback is `kustomize edit set image ...:<previous-sha>` + apply (docs/deployment.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../../base]
+images:
+  - name: ghcr.io/example/ride-hailing-backend
+    newName: ghcr.io/example/ride-hailing-backend
+    newTag: "0.0.0-production"  # CI replaces with the released git sha
