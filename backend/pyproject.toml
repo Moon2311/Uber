@@ -15,6 +15,7 @@ ignore = ["S101"]  # assert is fine in tests
 [tool.ruff.lint.per-file-ignores]
 "**/tests/*" = ["S105", "S106", "S107", "S311"]  # test passwords/tokens, non-crypto random
 "conftest.py" = ["S105", "S106"]
+"loadtest/*" = ["S105", "S311", "S603", "S607"]  # local load tools: throwaway users, random, docker
 
 [tool.ruff.lint.isort]
 known-first-party = ["apps", "config"]

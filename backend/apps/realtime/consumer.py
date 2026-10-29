@@ -41,6 +41,24 @@ logger = logging.getLogger("apps.realtime")
 CLOSE_UNAUTHENTICATED = 4401
 CLOSE_HEARTBEAT_TIMEOUT = 4408
 CLOSE_MESSAGE_TOO_LARGE = 4413
+CLOSE_TOO_MANY_MESSAGES = 4429
+
+
+class TokenBucket:
+    """Inbound backpressure per connection: `rate` messages/second, bursts of `burst`."""
+
+    def __init__(self, rate: float, burst: int, clock=time.monotonic):
+        self.rate, self.capacity, self.clock = rate, float(burst), clock
+        self.tokens, self.updated = float(burst), clock()
+
+    def take(self) -> bool:
+        now = self.clock()
+        self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
+        self.updated = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
 
 
 class RealtimeConsumer(AsyncJsonWebsocketConsumer):
@@ -58,7 +76,11 @@ class RealtimeConsumer(AsyncJsonWebsocketConsumer):
         self.trip_ids: set[str] = set()
         self.last_seen = time.monotonic()
         self.driver_id = getattr(getattr(self.user, "driver_profile", None), "pk", None)
+        self.bucket = TokenBucket(settings.REALTIME_INBOUND_RATE_PER_SECOND,
+                                  settings.REALTIME_INBOUND_BURST)  # fmt: skip
+        self.violations = 0
         await self.accept(subprotocol=SUBPROTOCOL)
+        metrics().gauge_add("realtime.connections", 1, tags={"role": self.user.role})
 
         await self._join(user_group(self.user.pk))
         if self.driver_id:
@@ -86,6 +108,7 @@ class RealtimeConsumer(AsyncJsonWebsocketConsumer):
         for group in list(self.groups_joined):
             await self.channel_layer.group_discard(group, self.channel_name)
         await database_sync_to_async(presence.remove)(self.user.pk, self.connection_id)
+        metrics().gauge_add("realtime.connections", -1, tags={"role": self.user.role})
         metrics().increment("realtime.disconnected", tags={"code": str(code)})
         logger.info(
             "realtime.disconnected",
@@ -120,6 +143,14 @@ class RealtimeConsumer(AsyncJsonWebsocketConsumer):
         raw = text_data if text_data is not None else (bytes_data or b"").decode("utf-8", "replace")
         if len(raw.encode()) > settings.REALTIME_MAX_MESSAGE_BYTES:
             await self.close(code=CLOSE_MESSAGE_TOO_LARGE)
+            return
+        if not self.bucket.take():
+            self.violations += 1
+            metrics().increment("realtime.rate_limited")
+            if self.violations >= settings.REALTIME_INBOUND_MAX_VIOLATIONS:
+                await self.close(code=CLOSE_TOO_MANY_MESSAGES)
+            else:
+                await self._error(None, "rate_limited", "Too many messages; slow down.")
             return
         try:
             content = json.loads(raw)

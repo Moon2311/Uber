@@ -12,6 +12,17 @@ from conftest import client_for, latest, live_store, make_driver, make_rider, se
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("live_store_backend")]
 AVAILABILITY = "/api/v1/drivers/availability/"
 NEARBY = "/api/v1/drivers/nearby/"
+
+
+def pseud(driver, client):
+    from rest_framework_simplejwt.tokens import AccessToken
+
+    from apps.drivers.serializers import driver_pseudonym
+
+    raw = client._credentials["HTTP_AUTHORIZATION"].split()[1]
+    return driver_pseudonym(driver.public_id, AccessToken(raw)["user_id"])
+
+
 CENTER = (37.7749, -122.4194)
 
 
@@ -161,7 +172,10 @@ def test_nearby_returns_only_available_fresh_drivers_sorted(strategy, rider_clie
     place(stale, seconds_ago=600)
     place(out_of_range, CENTER[0] + 1)
     body = nearby(rider_client, radius_km=5).json()
-    assert [r["id"] for r in body["results"]] == [str(close.public_id), str(far.public_id)]
+    assert [r["id"] for r in body["results"]] == [
+        pseud(close, rider_client),
+        pseud(far, rider_client),
+    ]
     assert body["count"] == 2
 
 
@@ -170,7 +184,7 @@ def test_nearby_filters_by_category(strategy, rider_client):
     place(economy)
     place(xl)
     body = nearby(rider_client, category="XL").json()
-    assert [r["id"] for r in body["results"]] == [str(xl.public_id)]
+    assert [r["id"] for r in body["results"]] == [pseud(xl, rider_client)]
 
 
 def test_nearby_exposes_no_personal_data(strategy, rider_client):

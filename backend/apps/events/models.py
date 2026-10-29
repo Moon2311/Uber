@@ -30,6 +30,8 @@ class OutboxEvent(models.Model):
     next_attempt_at = models.DateTimeField(null=True, blank=True)
     last_error = models.TextField(blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
+    # Request id of the transaction that wrote the event (sent as a Kafka header).
+    correlation_id = models.CharField(max_length=64, blank=True)
 
     class Meta:
         indexes = [

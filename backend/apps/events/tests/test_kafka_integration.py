@@ -120,25 +120,22 @@ def test_outbox_recovers_after_kafka_outage(rider_client, settings):
 
 
 def test_health_reports_kafka_and_lag(rider_client, settings):
-    from django.contrib.auth import get_user_model
+    from conftest import client_for, make_rider
 
+    staff = client_for(make_rider(is_staff=True))
     create_and_cancel(rider_client)
     OutboxRelay(get_publisher()).run_once()
-    body = rider_client.get("/api/v1/health/").json()
+    body = staff.get("/api/v1/health/").json()
     assert body["events"]["kafka"]["status"] == "ok" and body["events"]["outbox"]["pending"] == 0
+    assert rider_client.get("/api/v1/health/").json() == {"status": "ok"}  # no internals
 
-    staff = get_user_model().objects.create_user(
-        email="ops@example.com", password="x", role="RIDER", is_staff=True
-    )
-    from conftest import client_for
-
-    report = client_for(staff).get("/api/v1/health/events/").json()
+    report = staff.get("/api/v1/health/events/").json()
     assert report["consumer_groups"]["analytics"]["total_lag"] == 2
     assert "consumer_down:analytics" in report["problems"]  # no heartbeat yet
     assert rider_client.get("/api/v1/health/events/").status_code == 403
 
     settings.KAFKA_BOOTSTRAP_SERVERS = "localhost:1"
-    degraded = rider_client.get("/api/v1/health/")
+    degraded = staff.get("/api/v1/health/")
     assert degraded.status_code == 200 and degraded.json()["status"] == "degraded"
     assert "kafka_unreachable" in degraded.json()["events"]["problems"]
 

@@ -59,6 +59,8 @@ class NearbyDriversView(APIView):
             {
                 "count": len(drivers),
                 "radius_km": params["radius_km"],
-                "results": NearbyDriverSerializer(drivers, many=True).data,
+                "results": NearbyDriverSerializer(
+                    drivers, many=True, context={"viewer_id": request.user.pk}
+                ).data,
             }
         )

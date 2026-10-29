@@ -1,0 +1,44 @@
+# Default deny; then only: ingress controller -> api/realtime, Prometheus -> metrics,
+# and egress to DNS, managed data services and HTTPS (payment / push providers).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-ingress-controller}
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [api, realtime]}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}
+      ports: [{port: 8000}, {port: 8001}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-prometheus}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/part-of: ride-hailing}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+      ports: [{port: 8000}, {port: 8001}, {port: 9100}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-egress}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/part-of: ride-hailing}}
+  policyTypes: [Egress]
+  egress:
+    - ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]  # DNS
+    # Managed PostgreSQL / Redis / Kafka and HTTPS providers. Narrow `to:` to their
+    # CIDRs (or use your CNI's FQDN policies) in the overlay for your cloud.
+    - ports: [{port: 5432}, {port: 6379}, {port: 6380}, {port: 9092}, {port: 9093}, {port: 443}]

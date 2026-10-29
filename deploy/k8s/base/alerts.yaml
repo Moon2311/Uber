@@ -1,0 +1,188 @@
+# GENERATED from deploy/prometheus/alerts.yml (single source of truth): keep in sync
+# with `make k8s-alerts`.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ride-hailing
+spec:
+  groups:
+  - name: api
+    rules:
+    - alert: ApiLatencyP95High
+      expr: histogram_quantile(0.95, sum by (le, route) (rate(rh_http_request_latency_ms_bucket[5m]))) > 500
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: p95 latency of {{ $labels.route }} above 500 ms
+    - alert: ApiErrorRateHigh
+      expr: sum(rate(rh_http_request_latency_ms_count{status="5xx"}[5m])) / clamp_min(sum(rate(rh_http_request_latency_ms_count[5m])), 1) > 0.02
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: More than 2% of API requests fail with 5xx
+    - alert: RateLimitCacheUnavailable
+      expr: sum(rate(rh_cache_unavailable_total[5m])) > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: 'Throttling cache (Redis) unreachable: rate limits are OFF (fail-open)'
+  - name: realtime
+    rules:
+    - alert: WebSocketConnectionsDropped
+      expr: sum(rh_realtime_connections_inflight) < 0.5 * sum(rh_realtime_connections_inflight offset 15m) and sum(rh_realtime_connections_inflight offset 15m) > 100
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: Open WebSocket connections halved within 15 minutes
+    - alert: WebSocketPushFailures
+      expr: sum(rate(rh_realtime_push_failed_total[5m])) > 1
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: Channel-layer pushes failing (Redis?)
+  - name: dispatch
+    rules:
+    - alert: DriverLocationsStale
+      expr: rh_drivers_online_without_fresh_location / clamp_min(rh_drivers_online, 1) > 0.2 and rh_drivers_online > 20
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: More than 20% of online drivers have no fresh location
+    - alert: GpsIngestionDelayed
+      expr: histogram_quantile(0.95, sum by (le) (rate(rh_location_fix_age_ms_bucket[5m]))) > 30000
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: p95 GPS fix age at ingestion above 30 s
+    - alert: MatchingLatencyHigh
+      expr: histogram_quantile(0.95, sum by (le) (rate(rh_matching_round_latency_ms_bucket[5m]))) > 2000
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: p95 matching round above 2 s
+    - alert: EtaLatencyHigh
+      expr: histogram_quantile(0.95, sum by (le, provider) (rate(rh_matching_eta_latency_ms_bucket[5m]))) > 1000
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: p95 ETA call ({{ $labels.provider }}) above 1 s
+    - alert: AssignmentConflictsHigh
+      expr: sum(rate(rh_matching_assignment_failed_total{reason=~"constraint_conflict|locked_elsewhere|driver_reserved"}[5m])) > 2
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: 'Many reservation conflicts: matchers contend for the same drivers'
+    - alert: MatchingBacklog
+      expr: rh_matching_oldest_job_age_s > 180
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: A trip has waited more than 3 minutes for matching
+  - name: events
+    rules:
+    - alert: OutboxBacklog
+      expr: rh_events_outbox_oldest_pending_age_s > 120
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: 'Outbox events older than 2 minutes: relay or Kafka down'
+    - alert: OutboxEventsGaveUp
+      expr: rh_events_outbox_failed > 0
+      labels:
+        severity: warning
+      annotations:
+        summary: Outbox events marked FAILED (consumers missed them)
+    - alert: ConsumerLagHigh
+      expr: max by (group) (rh_events_consumer_lag) > 1000
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: Consumer group {{ $labels.group }} lags by more than 1000 events
+  - name: payments
+    rules:
+    - alert: PaymentsNeedReview
+      expr: rh_payments_needs_review > 0
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: Payments flagged for manual review (ambiguous or contradictory outcome)
+    - alert: PaymentAttemptsStuck
+      expr: rh_payments_open_attempts > 20
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: Many unresolved provider attempts (provider slow or down?)
+    - alert: PaymentFailureRatioHigh
+      expr: rh_payments_failed_last_hour / clamp_min(rh_payments_failed_last_hour + rh_payments_paid_last_hour, 1) > 0.15 and rh_payments_paid_last_hour > 20
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: More than 15% of charges failing in the last hour
+  - name: database
+    rules:
+    - alert: DatabaseConnectionsNearLimit
+      expr: rh_db_connections / rh_db_max_connections > 0.8
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: PostgreSQL connections above 80% of max_connections
+    - alert: LongRunningTransaction
+      expr: rh_db_longest_transaction_s > 60
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: A transaction has been open for more than 60 s (blocks vacuum, holds locks)
+    - alert: DatabaseLockWaits
+      expr: rh_db_connections_waiting_on_lock > 10
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Many sessions waiting on locks
+    - alert: DatabaseDeadlocks
+      expr: increase(rh_db_deadlocks_total[15m]) > 0
+      labels:
+        severity: warning
+      annotations:
+        summary: PostgreSQL detected deadlocks (lock order violated somewhere)
+  - name: jobs
+    rules:
+    - alert: SchedulerStalled
+      expr: time() - rh_scheduler_last_success_ts{job="expire_stale_drivers"} > 600
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Periodic maintenance has not run for 10 minutes
+    - alert: OpsMonitorDown
+      expr: absent(rh_db_connections)
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: run_ops_monitor is not reporting (state metrics missing)
+    - alert: NotificationsBacklog
+      expr: rh_notifications_oldest_pending_age_s > 300
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Push notifications waiting more than 5 minutes

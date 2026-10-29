@@ -7,7 +7,7 @@ Shape:
 import logging
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
-from django.db import IntegrityError
+from django.db import IntegrityError, OperationalError
 from django.http import Http404
 from rest_framework import exceptions, status
 from rest_framework.response import Response
@@ -53,6 +53,16 @@ def api_exception_handler(exc, context):
         exc = exceptions.NotFound()
     elif isinstance(exc, DjangoPermissionDenied):
         exc = exceptions.PermissionDenied()
+    elif isinstance(exc, OperationalError):
+        # Database down, lock_timeout / statement_timeout hit: transient and safe to
+        # retry (every write is transactional and idempotent where it matters).
+        logger.warning("Database unavailable or timed out: %s", type(exc).__name__)
+        response = Response(
+            _error_body("service_unavailable", "Temporarily unavailable. Please retry."),
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+        response["Retry-After"] = "2"
+        return response
     elif isinstance(exc, IntegrityError):
         # A DB constraint caught something validation missed (e.g. a race).
         logger.warning("Integrity error in %s", context.get("view").__class__.__name__)

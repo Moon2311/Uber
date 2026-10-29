@@ -9,9 +9,11 @@ from apps.common.logging import JsonFormatter, redact
 
 @pytest.mark.django_db
 def test_health_ok(api_client):
+    from conftest import client_for, make_rider
+
     response = api_client.get(reverse("v1:health"))
-    assert response.status_code == 200
-    body = response.json()
+    assert response.status_code == 200 and response.json() == {"status": "ok"}
+    body = client_for(make_rider(is_staff=True)).get(reverse("v1:health")).json()
     assert body["status"] == "ok" and body["database"] == "ok"
     assert body["live_store"]["status"] == "ok"
 

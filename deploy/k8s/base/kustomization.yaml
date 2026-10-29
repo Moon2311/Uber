@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ride-hailing
+labels:
+  - pairs: {app.kubernetes.io/part-of: ride-hailing}
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - api.yaml
+  - realtime.yaml
+  - workers.yaml
+  - jobs.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+  - monitoring.yaml
+  - alerts.yaml
+images:
+  - name: ghcr.io/example/ride-hailing-backend
+    newTag: set-by-overlay

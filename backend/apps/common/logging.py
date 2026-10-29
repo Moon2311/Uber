@@ -29,6 +29,17 @@ def redact(text: str) -> str:
     return text
 
 
+class RequestIdFilter(logging.Filter):
+    """Adds `request_id` (the correlation id of the current request / message)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        from .context import get_request_id
+
+        if not hasattr(record, "request_id"):
+            record.request_id = get_request_id()
+        return True
+
+
 class RedactSensitiveDataFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:

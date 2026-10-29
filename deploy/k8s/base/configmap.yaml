@@ -1,0 +1,30 @@
+# Non-secret settings. Secrets live in `app-secrets` (see secret.example.yaml),
+# delivered by External Secrets / Sealed Secrets / the cloud secret manager.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  APP_ENV: production
+  DJANGO_DEBUG: "false"
+  LOG_FORMAT: json
+  LOG_LEVEL: INFO
+  # One load balancer / ingress hop in front of the pods.
+  NUM_PROXIES: "1"
+  FORWARDED_ALLOW_IPS: "*"  # gunicorn: trust X-Forwarded-* from the in-cluster ingress
+  CACHE_BACKEND: redis
+  CHANNEL_LAYER_BACKEND: redis
+  LOCATION_STORE: redis
+  LOCATION_STORE_FALLBACK: postgres
+  METRICS_BACKEND: apps.common.metrics.PrometheusMetrics
+  PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+  KAFKA_ENABLED: "true"
+  KAFKA_REPLICATION_FACTOR: "3"
+  DATABASE_CONN_MAX_AGE: "60"
+  DATABASE_STATEMENT_TIMEOUT_MS: "15000"
+  DATABASE_LOCK_TIMEOUT_MS: "5000"
+  API_DOCS_ENABLED: "false"
+  REALTIME_ALLOW_MISSING_ORIGIN: "true"  # native apps send no Origin header
+  PRICING_SURGE_ENABLED: "false"  # ILLUSTRATIVE policy: enable per market after legal review
+  PAYMENTS_PROVIDER: sandbox  # no real provider exists yet: `check --deploy` blocks production
+  NOTIFICATIONS_PROVIDER: sandbox

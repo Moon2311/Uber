@@ -130,10 +130,20 @@ class WebhookView(APIView):
 
     authentication_classes = []
     permission_classes = [AllowAny]
-    throttle_classes = []
+    throttle_scope = "webhook"  # per source IP; generous, but bounds a flood
+    MAX_BODY = 64 * 1024
 
-    @extend_schema(request=None, responses={200: dict, 400: dict})
+    @extend_schema(request=None, responses={200: dict, 400: dict, 404: dict, 413: dict})
     def post(self, request, provider):
+        from django.core.exceptions import ImproperlyConfigured
+
+        try:
+            get_provider(provider)  # unknown or disabled here -> 404, never a 500
+        except ImproperlyConfigured as exc:
+            raise Http404 from exc
+        if int(request.META.get("CONTENT_LENGTH") or 0) > self.MAX_BODY:
+            return Response({"error": {"code": "payload_too_large", "message": "Rejected.",
+                                       "details": {}}}, status=413)  # fmt: skip
         body = request.body  # raw bytes, read BEFORE any parsing
         try:
             outcome = process_webhook(provider, body, request.headers)

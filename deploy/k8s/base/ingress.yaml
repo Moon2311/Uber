@@ -1,0 +1,31 @@
+# TLS terminates here: HTTPS for the API, WSS for WebSockets (same certificate).
+# ingress-nginx annotations; adapt for another controller (ALB, GKE, Traefik).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ride-hailing
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "256k"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"   # WebSockets are long-lived
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/limit-rps: "50"              # per client IP, in front of app throttles
+    # /metrics is cluster-internal only (Prometheus scrapes pods directly).
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location = /metrics { return 404; }
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.example.com, ws.example.com]
+      secretName: ride-hailing-tls
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: api, port: {name: http}}}}
+    - host: ws.example.com
+      http:
+        paths:
+          - {path: /ws/, pathType: Prefix, backend: {service: {name: realtime, port: {name: ws}}}}

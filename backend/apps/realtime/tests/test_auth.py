@@ -52,10 +52,10 @@ def test_expired_token_is_rejected():
 
 
 def test_refresh_token_cannot_be_used():
-    rider = make_rider()
+    refresh = str(RefreshToken.for_user(make_rider()))  # writes the outstanding-token row
 
     async def scenario():
-        ok, _ = await Client(token=str(RefreshToken.for_user(rider))).connect(expect=False)
+        ok, _ = await Client(token=refresh).connect(expect=False)
         assert not ok
 
     run(scenario)

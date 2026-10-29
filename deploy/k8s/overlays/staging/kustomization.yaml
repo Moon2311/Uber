@@ -1,0 +1,31 @@
+# Staging: production-shaped, smaller, sandbox providers explicitly allowed.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../../base]
+namespace: ride-hailing-staging
+images:
+  - name: ghcr.io/example/ride-hailing-backend
+    newName: ghcr.io/example/ride-hailing-backend
+    newTag: "0.0.0-staging"  # CI replaces with the git sha (kustomize edit set image)
+patches:
+  - target: {kind: ConfigMap, name: app-config}
+    patch: |
+      - {op: replace, path: /data/APP_ENV, value: staging}
+      - {op: add, path: /data/PAYMENTS_SANDBOX_ALLOWED, value: "true"}
+      - {op: replace, path: /data/KAFKA_REPLICATION_FACTOR, value: "1"}
+  - target: {kind: HorizontalPodAutoscaler}
+    patch: |
+      - {op: replace, path: /spec/minReplicas, value: 1}
+      - {op: replace, path: /spec/maxReplicas, value: 4}
+  - target: {kind: Deployment}
+    patch: |
+      - {op: replace, path: /spec/replicas, value: 1}
+  - target: {kind: PodDisruptionBudget, name: api}  # 1 replica in staging: allow drains
+    patch: |
+      - {op: remove, path: /spec/minAvailable}
+      - {op: add, path: /spec/maxUnavailable, value: 1}
+  - target: {kind: Ingress}
+    patch: |
+      - {op: replace, path: /spec/rules/0/host, value: api.staging.example.com}
+      - {op: replace, path: /spec/rules/1/host, value: ws.staging.example.com}
+      - {op: replace, path: /spec/tls/0/hosts, value: [api.staging.example.com, ws.staging.example.com]}

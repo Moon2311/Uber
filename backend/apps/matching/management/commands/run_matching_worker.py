@@ -6,6 +6,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError, connection
 
+from apps.common.context import bound_request_id
+from apps.common.worker import beat
 from apps.matching.offers import expire_offers
 from apps.matching.orchestrator import MatchingOrchestrator
 
@@ -23,14 +25,19 @@ class Command(BaseCommand):
 
     def handle(self, *args, once, **options):
         orchestrator = MatchingOrchestrator()
+        from apps.common.observability import start_worker_metrics_server
+
+        start_worker_metrics_server()
         stop = {"flag": False}
         signal.signal(signal.SIGTERM, lambda *_: stop.update(flag=True))
         signal.signal(signal.SIGINT, lambda *_: stop.update(flag=True))
         logger.info("matching.worker.started", extra={"owner": orchestrator.owner})
         while not stop["flag"]:
+            beat()
             try:
-                expire_offers(locks=orchestrator.state.locks)
-                reports = orchestrator.run_once(limit=settings.MATCHING_WORKER_BATCH)
+                with bound_request_id(None):  # correlates this round's logs and events
+                    expire_offers(locks=orchestrator.state.locks)
+                    reports = orchestrator.run_once(limit=settings.MATCHING_WORKER_BATCH)
             except DatabaseError:
                 logger.exception("matching.worker.database_error")
                 connection.close()
